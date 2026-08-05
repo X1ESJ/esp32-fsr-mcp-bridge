@@ -67,5 +67,4 @@ This checklist tracks the requirements discussed during development and the curr
 - [x] README explains project direction, usage, build steps, firmware, and MCP tools.
 - [x] Source release excludes APKs, build cache, and signing keys.
 - [x] License is BSD 2-Clause, requiring copyright/license retention on redistribution.
-- [ ] Push source to GitHub repository after final verification.
-
+- [x] Push source to GitHub repository after final verification.
