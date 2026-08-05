@@ -216,15 +216,7 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware\Esp32_wifi_connect
 
 首次启动如果没有保存 WiFi，ESP32 会进入 BLE 配网模式。
 
-## 11. 版本规则
-
-版本格式：`V主版本.UI版本.功能版本`
-
-- 功能方向大改变：改第一位，例如 `V3.3.23`。
-- UI 大改动：改第二位，例如 `V2.4.23`。
-- 小功能添加、删除或修正：最后一位加一，例如 `V2.3.24`。
-
-## 12. 开源协议
+## 11. 开源协议
 
 本项目使用 BSD 2-Clause License。
 
