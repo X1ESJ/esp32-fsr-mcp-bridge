@@ -1,9 +1,5 @@
 # ESP32 FSR MCP Bridge
 
-Copyright (c) 2026 LINYUN XESJ
-
-All rights reserved.
-
 Licensed under BSD 2-Clause License.
 
 当前版本：`V2.4.25`
