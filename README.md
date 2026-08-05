@@ -10,6 +10,7 @@ Android + ESP32-S3 project for reading FSR402 pressure sensor data from ADC-capa
 ## 1. 项目方向
 
 本项目通过 WiFi 接收 ESP32-S3 支持 ADC 的 GPIO 端口数据，并通过手机本地 MCP 服务获取最近 60 秒内的引脚数据。
+灵感来源：群友想要制作“共感娃娃”，本人提供wifi&蓝牙连接思路，最后借助ai写出本项目。
 
 整体链路是：
 
