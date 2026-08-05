@@ -205,7 +205,7 @@ class FsrMcpServer(
                     "capabilities" to mapOf("tools" to emptyMap<String, Any>()),
                     "serverInfo" to mapOf(
                         "name" to "esp32-fsr-phone-bridge",
-                        "version" to "V2.3.23"
+                        "version" to "V2.3.24"
                     )
                 )
             )
@@ -337,7 +337,7 @@ class FsrMcpServer(
             ),
             mapOf(
                 "name" to "fsr_get_history",
-                "description" to "读取最近 60 秒内 FSR402 传感器的本地历史缓存，包含抽样点和压缩稳定段。",
+                "description" to "读取最近 2 分钟内 FSR402 传感器的 App 私有数据区历史缓存，包含抽样点和压缩稳定段。",
                 "inputSchema" to mapOf(
                     "type" to "object",
                     "properties" to mapOf(
@@ -345,7 +345,7 @@ class FsrMcpServer(
                         "names" to mapOf("type" to "array", "items" to mapOf("type" to "string")),
                         "fromMs" to mapOf("type" to "integer", "description" to "起始时间戳，毫秒"),
                         "toMs" to mapOf("type" to "integer", "description" to "结束时间戳，毫秒，默认当前时间"),
-                        "lastMs" to mapOf("type" to "integer", "description" to "最近多少毫秒，默认 60000"),
+                        "lastMs" to mapOf("type" to "integer", "description" to "最近多少毫秒，默认 120000"),
                         "intervalMs" to mapOf("type" to "integer", "description" to "返回点的抽样间隔，默认 500"),
                         "compressionTolerance" to mapOf("type" to "integer", "description" to "压缩稳定段的数值容差，默认 15")
                     )

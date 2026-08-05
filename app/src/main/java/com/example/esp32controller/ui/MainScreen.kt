@@ -1044,7 +1044,7 @@ private fun FsrHistoryChart(history: List<PinHistoryPoint>) {
 
         if (sorted.size >= 2) {
             val minSecond = sorted.first().second
-            val maxSecond = (minSecond + 59).coerceAtLeast(sorted.last().second)
+            val maxSecond = (minSecond + 120).coerceAtLeast(sorted.last().second)
             val path = Path()
             sorted.forEachIndexed { index, point ->
                 val xProgress = if (maxSecond == minSecond) 0f else {
@@ -1110,9 +1110,9 @@ private val mcpToolDocs = listOf(
     ),
     McpToolDoc(
         name = "fsr_get_history",
-        purpose = "读取最近 60 秒的本地历史缓存。",
+        purpose = "读取最近 2 分钟的 App 私有数据区历史缓存。",
         setting = "适合分析一段时间内的触摸强弱、持续时间和变化趋势。",
-        inputs = listOf("name/names：筛选传感器", "lastMs：最近多少毫秒，默认 60000", "fromMs/toMs：时间戳范围", "intervalMs：抽样间隔，默认 500", "compressionTolerance：稳定段压缩容差，默认 15"),
+        inputs = listOf("name/names：筛选传感器", "lastMs：最近多少毫秒，默认 120000", "fromMs/toMs：时间戳范围", "intervalMs：抽样间隔，默认 500", "compressionTolerance：稳定段压缩容差，默认 15"),
         returns = listOf("series：每个传感器一组历史数据", "data：抽样点", "compressed：压缩后的稳定段，含 fromMs、toMs、minValue、maxValue、samples")
     )
 )
@@ -1137,7 +1137,7 @@ private fun ToolsDetailScreen(onClose: () -> Unit) {
             ) {
                 item {
                     Text(
-                        "第三方 AI 应用通过这些 tools 读取手机本地 60 秒缓存和当前 FSR 数据。工具名称需要保持英文，参数建议优先使用 App 中的中文传感器名称。",
+                        "第三方 AI 应用通过这些 tools 读取手机本地 2 分钟缓存和当前 FSR 数据。工具名称需要保持英文，参数建议优先使用 App 中的中文传感器名称。",
                         color = Muted
                     )
                 }

@@ -30,8 +30,8 @@ android {
         applicationId "com.example.esp32controller"
         minSdk 26
         targetSdk 34
-        versionCode 20323
-        versionName "V2.3.23"
+        versionCode 20324
+        versionName "V2.3.24"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }

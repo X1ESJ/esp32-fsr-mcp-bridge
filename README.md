@@ -6,13 +6,13 @@ All rights reserved.
 
 Licensed under BSD 2-Clause License.
 
-当前版本：`V2.3.23`
+当前版本：`V2.3.24`
 
 作者：琳云 XESJ
 
 邮箱：xianeshijie@outlook.com
 
-本项目通过 WiFi 接收 ESP32-S3 支持 ADC 的 GPIO 端口数据，在 Android 手机本地缓存最近 60 秒，并通过手机本地 MCP 服务让第三方 AI 聊天应用读取这些传感器数据。
+本项目通过 WiFi 接收 ESP32-S3 支持 ADC 的 GPIO 端口数据，在 Android App 私有数据区滚动缓存最近 2 分钟，并通过手机本地 MCP 服务让第三方 AI 聊天应用读取这些传感器数据。
 
 灵感来源：群友想要制作“共感娃娃”，本人提供 WiFi 和 BLE 连接思路，最后借助 AI 写出本项目。
 
@@ -73,7 +73,7 @@ Licensed under BSD 2-Clause License.
 FSR402 薄膜压力传感器
     -> ESP32-S3 ADC GPIO 1-10
     -> ESP32 HTTP API / mDNS / BLE 错误回传
-    -> Android App 本地缓存最近 60 秒
+    -> Android App 私有数据区滚动缓存最近 2 分钟
     -> 手机本地 MCP Server
     -> 第三方 AI 聊天应用调用 MCP tools
 ```
@@ -355,14 +355,14 @@ HTTP MCP 客户端配置示例，字段名以客户端实际版本为准：
 
 ### 6.5 `fsr_get_history`
 
-功能：获取最近 60 秒本地历史缓存，包含抽样点和压缩稳定段。
+功能：获取最近 2 分钟 App 私有数据区历史缓存，包含抽样点和压缩稳定段。
 
 传入值：
 
 ```json
 {
   "names": ["左耳"],
-  "lastMs": 60000,
+  "lastMs": 120000,
   "intervalMs": 500,
   "compressionTolerance": 15
 }
@@ -370,15 +370,16 @@ HTTP MCP 客户端配置示例，字段名以客户端实际版本为准：
 
 规则：
 
-- App 固定每 `0.5s` 采集一次，60 秒最多约 `120` 帧。
-- 10 个传感器同时启用时，最多约 `1200` 个原始点。
+- App 固定每 `0.5s` 采集一次，2 分钟最多约 `240` 帧。
+- 10 个传感器同时启用时，最多约 `2400` 个原始点。
 - 默认压缩容差为 `±15` 个 ADC 值。
 - 连续稳定数据会合并为区间，减少 AI 客户端读取体积。
+- 实时传感器历史只保存在 Android App 私有数据区的滚动缓存里；ESP32 Flash 只保存 WiFi 和传感器配置。
 
 AI Prompt 示例：
 
 ```text
-请调用 fsr_get_history，读取“左耳”和“身体”最近 60 秒数据，
+请调用 fsr_get_history，读取“左耳”和“身体”最近 2 分钟数据，
 判断是否出现持续按压、短促点击或逐渐加重的压力变化。
 ```
 
@@ -479,7 +480,7 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware\Esp32_wifi_connect
 
 - 确认 App 主界面 MCP 服务开关处于开启状态。
 - 确认 App 常驻通知没有被系统关闭。
-- 确认最近 60 秒内有采集数据，缓存退出 App 后会清空。
+- 确认最近 2 分钟内有采集数据；App 会从私有数据区恢复未过期缓存，超过 2 分钟会自动丢弃。
 - 如果系统杀后台服务，请给 App 允许后台运行、自启动和通知。
 
 ### 9.4 ADC 数值跳变严重
@@ -520,6 +521,12 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware\Esp32_wifi_connect
 - 支持更长时间的本地历史持久化。
 
 ## 12. 更新日志 Changelog
+
+### V2.3.24
+
+- App 历史缓存从 60 秒改为 2 分钟。
+- 传感器历史写入 Android App 私有数据区滚动缓存，避免进程短暂重建导致历史断层。
+- 明确 ESP32 Flash 只保存 WiFi 和传感器配置，不保存实时传感器历史。
 
 ### V2.3.23
 

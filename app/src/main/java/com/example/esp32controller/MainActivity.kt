@@ -19,6 +19,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.esp32controller.data.fsr.FsrDataHub
 import com.example.esp32controller.service.FsrBridgeService
 import com.example.esp32controller.ui.MainScreen
 import com.example.esp32controller.ui.theme.Esp32ControllerTheme
@@ -31,6 +32,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        FsrDataHub.initialize(applicationContext)
         enableEdgeToEdge()
         setContent {
             Esp32ControllerTheme {

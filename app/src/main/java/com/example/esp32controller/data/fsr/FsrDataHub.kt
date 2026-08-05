@@ -1,5 +1,6 @@
 package com.example.esp32controller.data.fsr
 
+import android.content.Context
 import com.example.esp32controller.data.mcp.toMcpSensor
 import com.example.esp32controller.model.DeviceUiModel
 import com.example.esp32controller.model.FSR_ANALOG_MAX_VALUE
@@ -17,18 +18,23 @@ import com.example.esp32controller.model.PIN_MODE_ANALOG
 import com.example.esp32controller.model.PinConfig
 import com.example.esp32controller.model.PinHistoryPoint
 import com.example.esp32controller.model.StoredDevice
+import com.google.gson.Gson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.io.File
+import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-private const val HISTORY_WINDOW_MS = 60_000L
+private const val HISTORY_WINDOW_MS = 120_000L
 private const val DEFAULT_SAMPLING_INTERVAL_MS = 500
 private const val DEFAULT_CHANGE_DELTA = 8
 private const val DEFAULT_COMPRESSION_TOLERANCE = 15
 private const val MAX_CHANGE_EVENTS = 2400
+private const val CACHE_DIR_NAME = "fsr-cache"
+private const val CACHE_FILE_NAME = "recent_sensor_cache.json"
 
 data class FsrBridgeState(
     val selectedDevice: StoredDevice? = null,
@@ -42,15 +48,34 @@ data class FsrBridgeState(
 )
 
 object FsrDataHub {
+    private val gson = Gson()
     private val lock = Any()
     private val latestReadings = linkedMapOf<String, FsrSensorReading>()
     private val latestConfigs = linkedMapOf<String, PinConfig>()
     private val history = linkedMapOf<String, ArrayDeque<FsrHistoryPoint>>()
     private val changeEvents = ArrayDeque<FsrChangeEvent>()
+    private val persistExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "fsr-cache-writer").apply { isDaemon = true }
+    }
+    @Volatile private var cacheFile: File? = null
+    @Volatile private var initialized = false
     private var nextSequence = 1L
 
     private val _state = MutableStateFlow(FsrBridgeState())
     val state: StateFlow<FsrBridgeState> = _state.asStateFlow()
+
+    fun initialize(context: Context) {
+        if (initialized) return
+        val file = File(File(context.filesDir, CACHE_DIR_NAME), CACHE_FILE_NAME)
+        synchronized(lock) {
+            if (initialized) return
+            cacheFile = file
+            runCatching { file.parentFile?.mkdirs() }
+            loadCacheLocked(file, System.currentTimeMillis())
+            initialized = true
+        }
+        publishState()
+    }
 
     fun updateMcpState(mcpState: McpServerState) {
         _state.update { it.copy(mcpState = mcpState) }
@@ -73,6 +98,7 @@ object FsrDataHub {
     }
 
     fun updateSelectedDevice(device: StoredDevice?) {
+        var shouldPersist = false
         _state.update {
             if (device == null) {
                 synchronized(lock) {
@@ -80,6 +106,8 @@ object FsrDataHub {
                     latestReadings.clear()
                     history.clear()
                     changeEvents.clear()
+                    nextSequence = 1L
+                    shouldPersist = true
                 }
                 it.copy(
                     selectedDevice = null,
@@ -94,6 +122,7 @@ object FsrDataHub {
                 it.copy(selectedDevice = device)
             }
         }
+        if (shouldPersist) persistCacheSnapshot()
     }
 
     fun updateDeviceStatus(online: Boolean, ledOn: Boolean = false) {
@@ -170,6 +199,7 @@ object FsrDataHub {
             trimHistory(now)
         }
         publishState()
+        persistCacheSnapshot()
     }
 
     fun acceptExternalSensorPayload(values: Map<String, Int>) {
@@ -189,6 +219,7 @@ object FsrDataHub {
             trimHistory(now)
         }
         publishState()
+        persistCacheSnapshot()
     }
 
     fun buildMcpSnapshot(): FsrMcpSnapshot {
@@ -368,6 +399,75 @@ object FsrDataHub {
         }
     }
 
+    private fun loadCacheLocked(file: File, now: Long) {
+        if (!file.exists()) return
+        val loaded = runCatching {
+            gson.fromJson(file.readText(Charsets.UTF_8), PersistedFsrCache::class.java)
+        }.getOrNull() ?: return
+
+        latestConfigs.clear()
+        latestReadings.clear()
+        history.clear()
+        changeEvents.clear()
+
+        val oldest = now - HISTORY_WINDOW_MS
+        loaded.latestConfigs.orEmpty()
+            .filter { it.direction == PIN_DIRECTION_INPUT && it.mode == PIN_MODE_ANALOG }
+            .forEach { config ->
+                latestConfigs[config.sensorKey()] = config.normalizedSensorConfig()
+            }
+
+        loaded.latestReadings.orEmpty()
+            .filter { it.updatedAtMillis >= oldest }
+            .forEach { reading ->
+                latestReadings[reading.key] = reading
+            }
+
+        loaded.history.orEmpty().forEach { (key, points) ->
+            val trimmed = points
+                .filter { it.t >= oldest }
+                .sortedBy { it.t }
+            if (trimmed.isNotEmpty()) {
+                history[key] = ArrayDeque<FsrHistoryPoint>().apply { addAll(trimmed) }
+            }
+        }
+
+        loaded.changeEvents.orEmpty()
+            .filter { it.t >= oldest }
+            .sortedBy { it.sequence }
+            .forEach { changeEvents.addLast(it) }
+
+        val maxLoadedSequence = changeEvents.maxOfOrNull { it.sequence } ?: 0L
+        nextSequence = maxOf(loaded.nextSequence ?: 1L, maxLoadedSequence + 1L)
+        trimHistory(now)
+    }
+
+    private fun persistCacheSnapshot() {
+        val file = cacheFile ?: return
+        val snapshot = synchronized(lock) {
+            PersistedFsrCache(
+                savedAtMillis = System.currentTimeMillis(),
+                latestConfigs = latestConfigs.values.toList(),
+                latestReadings = latestReadings.values.toList(),
+                history = history.mapValues { (_, points) -> points.toList() },
+                changeEvents = changeEvents.toList(),
+                nextSequence = nextSequence
+            )
+        }
+        persistExecutor.execute {
+            runCatching {
+                val parent = file.parentFile ?: return@runCatching
+                parent.mkdirs()
+                val tmp = File(parent, "$CACHE_FILE_NAME.tmp")
+                tmp.writeText(gson.toJson(snapshot), Charsets.UTF_8)
+                if (tmp.renameTo(file).not()) {
+                    file.writeText(gson.toJson(snapshot), Charsets.UTF_8)
+                    tmp.delete()
+                }
+            }
+        }
+    }
+
     private fun List<FsrHistoryPoint>.downSample(fromMs: Long, intervalMs: Int): List<FsrHistoryPoint> {
         if (intervalMs <= DEFAULT_SAMPLING_INTERVAL_MS) return this
         return groupBy { ((it.t - fromMs).coerceAtLeast(0L) / intervalMs) }
@@ -464,4 +564,13 @@ object FsrDataHub {
             else -> key
         }
     }
+
+    private data class PersistedFsrCache(
+        val savedAtMillis: Long? = null,
+        val latestConfigs: List<PinConfig>? = null,
+        val latestReadings: List<FsrSensorReading>? = null,
+        val history: Map<String, List<FsrHistoryPoint>>? = null,
+        val changeEvents: List<FsrChangeEvent>? = null,
+        val nextSequence: Long? = null
+    )
 }

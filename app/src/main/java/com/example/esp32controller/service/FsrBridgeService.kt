@@ -63,6 +63,7 @@ class FsrBridgeService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        FsrDataHub.initialize(applicationContext)
         deviceStore = DeviceStore(applicationContext, gson)
         mdnsResolver = MdnsResolver(applicationContext)
         bleProvisioningManager = BleProvisioningManager(applicationContext)
