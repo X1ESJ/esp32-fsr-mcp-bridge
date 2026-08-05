@@ -1,0 +1,21 @@
+# Gradle / Android
+.gradle/
+build/
+*/build/
+local.properties
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Local release signing. Never publish signing keys.
+local-signing/
+*.jks
+*.keystore
+*.p12
+
+# Generated artifacts
+outputs/
+captures/
+work/

@@ -1,0 +1,9 @@
+# Copy this file to local-signing/release.properties or provide the same values
+# through environment variables when building a signed release APK.
+#
+# Do not commit real signing passwords or keystore files.
+
+RELEASE_STORE_FILE=local-signing/esp32-controller-release.jks
+RELEASE_STORE_PASSWORD=change-me
+RELEASE_KEY_ALIAS=esp32-controller
+RELEASE_KEY_PASSWORD=change-me
