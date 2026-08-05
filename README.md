@@ -8,10 +8,6 @@ Licensed under BSD 2-Clause License.
 
 当前版本：`V2.4.25`
 
-作者：琳云 XESJ
-
-邮箱：xianeshijie@outlook.com
-
 本项目通过 WiFi 接收 ESP32-S3 支持 ADC 的 GPIO 端口数据，在 Android App 私有数据区持续保存 FSR402 压力传感器记录，并通过手机本地 MCP 服务让第三方 AI 聊天应用读取实时值、短期历史、触摸事件和会话摘要。
 
 App 默认保留 `60 秒` 短期历史用于实时 MCP 查询，同时把所有采样追加写入手机本地 SQLite 数据库。可选 Supabase 云同步由 App 直接通过 PostgREST 上传分钟聚合和会话摘要，MCP 不参与上传链路。
@@ -876,3 +872,7 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware\Esp32_wifi_connect
 本项目由 姚 大人赞助的资金推动创建，不会向任何人收取除此之外的任何费用 ^_^
 <img width="408" height="390" alt="image" src="https://github.com/user-attachments/assets/8507b82e-db38-46d1-95bd-29763fc75de8" />
 
+
+作者：琳云 XESJ
+
+邮箱：xianeshijie@outlook.com
