@@ -20,12 +20,15 @@ import com.example.esp32controller.data.mdns.MdnsResolver
 import com.example.esp32controller.data.network.Esp32ApiClient
 import com.example.esp32controller.data.network.Esp32ApiService
 import com.example.esp32controller.data.storage.DeviceStore
+import com.example.esp32controller.data.storage.FsrSettingsStore
 import com.example.esp32controller.model.BleScanDevice
 import com.example.esp32controller.model.DEFAULT_MDNS_HOST
 import com.example.esp32controller.model.DeviceRuntimeState
 import com.example.esp32controller.model.DeviceUiModel
 import com.example.esp32controller.model.FSR_ANALOG_MAX_VALUE
 import com.example.esp32controller.model.FSR_SENSOR_PINS
+import com.example.esp32controller.model.FsrBridgeSettings
+import com.example.esp32controller.model.FsrDatabaseStats
 import com.example.esp32controller.model.FsrMcpSnapshot
 import com.example.esp32controller.model.FsrSensorReading
 import com.example.esp32controller.model.McpServerState
@@ -37,6 +40,8 @@ import com.example.esp32controller.model.PinConfig
 import com.example.esp32controller.model.PinDashboard
 import com.example.esp32controller.model.PinHistoryPoint
 import com.example.esp32controller.model.StoredDevice
+import com.example.esp32controller.model.SupabaseSettings
+import com.example.esp32controller.model.SupabaseSyncState
 import com.example.esp32controller.model.WifiNetworkOption
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
@@ -90,6 +95,12 @@ data class MainUiState(
     val sensorHistory: Map<String, List<PinHistoryPoint>> = emptyMap(),
     val pinBusy: Boolean = false,
     val mcpState: McpServerState = McpServerState(),
+    val settings: FsrBridgeSettings = FsrBridgeSettings(),
+    val databaseStats: FsrDatabaseStats = FsrDatabaseStats(),
+    val supabaseSyncState: SupabaseSyncState = SupabaseSyncState(),
+    val settingsVisible: Boolean = false,
+    val exportBusy: Boolean = false,
+    val exportMessage: String? = null,
     val bleWifiError: String? = null,
     val selectedWifiFrequencyMhz: Int? = null,
     val routerPingOk: Boolean? = null,
@@ -100,6 +111,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val appContext = application.applicationContext
     private val gson = Gson()
     private val deviceStore = DeviceStore(appContext, gson)
+    private val settingsStore = FsrSettingsStore(appContext)
     private val bleProvisioningManager = BleProvisioningManager(appContext)
     private val apiClient = Esp32ApiClient()
     private val mdnsResolver = MdnsResolver(appContext)
@@ -115,6 +127,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val pinHistoryStartedAt = System.currentTimeMillis()
 
     private var observeStoreJob: Job? = null
+    private var observeSettingsJob: Job? = null
     private var bleScanJob: Job? = null
     private var provisionJob: Job? = null
     private var pollJob: Job? = null
@@ -133,6 +146,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         registerWifiScanReceiver()
         observeStoredDevices()
+        observeSettings()
         observeBridgeHub()
         refreshWifiContext()
         startMdnsWindow()
@@ -345,6 +359,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(sensorPanelVisible = false) }
     }
 
+    fun openSettings() {
+        _uiState.update { it.copy(settingsVisible = true, exportMessage = null) }
+    }
+
+    fun closeSettings() {
+        _uiState.update { it.copy(settingsVisible = false) }
+    }
+
+    fun updateHistoryWindowMs(value: Long) {
+        viewModelScope.launch {
+            settingsStore.updateHistoryWindowMs(value)
+        }
+    }
+
+    fun updateSampleIntervalMs(value: Long) {
+        viewModelScope.launch {
+            settingsStore.updateSampleIntervalMs(value)
+        }
+    }
+
+    fun updateTriggerThreshold(value: Int) {
+        viewModelScope.launch {
+            settingsStore.updateTriggerThreshold(value)
+        }
+    }
+
+    fun updateSupabaseSettings(settings: SupabaseSettings) {
+        viewModelScope.launch {
+            settingsStore.updateSupabase(settings)
+        }
+    }
+
+    fun exportFsrDatabase() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(exportBusy = true, exportMessage = null) }
+            val file = withContext(Dispatchers.IO) {
+                FsrDataHub.flushRecorder()
+                FsrDataHub.exportDatabase(appContext)
+            }
+            _uiState.update {
+                it.copy(
+                    exportBusy = false,
+                    exportMessage = file?.absolutePath ?: "导出失败，请稍后重试"
+                )
+            }
+        }
+    }
+
     fun saveFsrSensor(pin: Int, label: String) {
         val selectedDevice = getSelectedStoredDevice() ?: run {
             _uiState.update { it.copy(controlError = "请先选择一个设备") }
@@ -444,6 +506,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         sensorReadings = bridgeState.sensorReadings,
                         sensorHistory = bridgeState.sensorHistory,
                         mcpState = bridgeState.mcpState,
+                        settings = bridgeState.settings,
+                        databaseStats = bridgeState.databaseStats,
+                        supabaseSyncState = bridgeState.supabaseSyncState,
                         bleWifiError = bridgeState.bleWifiError,
                         pinBusy = false
                     )
@@ -850,6 +915,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     refreshSensorDashboard(showErrors = false)
                     startStatusPolling()
                 }
+            }
+        }
+    }
+
+    private fun observeSettings() {
+        observeSettingsJob?.cancel()
+        observeSettingsJob = viewModelScope.launch {
+            settingsStore.settingsFlow.collect { settings ->
+                FsrDataHub.configure(settings)
+                _uiState.update { it.copy(settings = settings) }
             }
         }
     }

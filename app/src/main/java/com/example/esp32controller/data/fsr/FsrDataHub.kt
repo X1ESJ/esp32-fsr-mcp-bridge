@@ -2,22 +2,28 @@ package com.example.esp32controller.data.fsr
 
 import android.content.Context
 import com.example.esp32controller.data.mcp.toMcpSensor
-import com.example.esp32controller.model.DeviceUiModel
+import com.example.esp32controller.model.DEFAULT_FSR_HISTORY_WINDOW_MS
 import com.example.esp32controller.model.FSR_ANALOG_MAX_VALUE
+import com.example.esp32controller.model.FsrBridgeSettings
 import com.example.esp32controller.model.FsrChangeEvent
 import com.example.esp32controller.model.FsrChangesResult
+import com.example.esp32controller.model.FsrDatabaseStats
 import com.example.esp32controller.model.FsrHistoryPoint
 import com.example.esp32controller.model.FsrHistoryResult
 import com.example.esp32controller.model.FsrHistorySegment
 import com.example.esp32controller.model.FsrHistorySeries
+import com.example.esp32controller.model.FsrLocalEvent
 import com.example.esp32controller.model.FsrMcpSnapshot
+import com.example.esp32controller.model.FsrSessionSummary
 import com.example.esp32controller.model.FsrSensorReading
+import com.example.esp32controller.model.FsrWindowResult
 import com.example.esp32controller.model.McpServerState
 import com.example.esp32controller.model.PIN_DIRECTION_INPUT
 import com.example.esp32controller.model.PIN_MODE_ANALOG
 import com.example.esp32controller.model.PinConfig
 import com.example.esp32controller.model.PinHistoryPoint
 import com.example.esp32controller.model.StoredDevice
+import com.example.esp32controller.model.SupabaseSyncState
 import com.google.gson.Gson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -28,13 +34,12 @@ import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-private const val HISTORY_WINDOW_MS = 120_000L
-private const val DEFAULT_SAMPLING_INTERVAL_MS = 500
 private const val DEFAULT_CHANGE_DELTA = 8
 private const val DEFAULT_COMPRESSION_TOLERANCE = 15
 private const val MAX_CHANGE_EVENTS = 2400
 private const val CACHE_DIR_NAME = "fsr-cache"
 private const val CACHE_FILE_NAME = "recent_sensor_cache.json"
+private const val DATABASE_STATS_REFRESH_MS = 5_000L
 
 data class FsrBridgeState(
     val selectedDevice: StoredDevice? = null,
@@ -44,7 +49,10 @@ data class FsrBridgeState(
     val sensorReadings: List<FsrSensorReading> = emptyList(),
     val sensorHistory: Map<String, List<PinHistoryPoint>> = emptyMap(),
     val mcpState: McpServerState = McpServerState(),
-    val bleWifiError: String? = null
+    val bleWifiError: String? = null,
+    val settings: FsrBridgeSettings = FsrBridgeSettings(),
+    val databaseStats: FsrDatabaseStats = FsrDatabaseStats(),
+    val supabaseSyncState: SupabaseSyncState = SupabaseSyncState()
 )
 
 object FsrDataHub {
@@ -58,8 +66,13 @@ object FsrDataHub {
         Thread(runnable, "fsr-cache-writer").apply { isDaemon = true }
     }
     @Volatile private var cacheFile: File? = null
+    @Volatile private var database: FsrLocalDatabase? = null
+    @Volatile private var recorder: FsrHistoryRecorder? = null
     @Volatile private var initialized = false
+    @Volatile private var currentSettings = FsrBridgeSettings()
     private var nextSequence = 1L
+    private var lastSampleRecordedAt = 0L
+    private var lastStatsPublishedAt = 0L
 
     private val _state = MutableStateFlow(FsrBridgeState())
     val state: StateFlow<FsrBridgeState> = _state.asStateFlow()
@@ -70,15 +83,32 @@ object FsrDataHub {
         synchronized(lock) {
             if (initialized) return
             cacheFile = file
+            database = FsrLocalDatabase.get(context, gson)
+            recorder = FsrHistoryRecorder(database = database!!, gson = gson).also { it.configure(currentSettings) }
             runCatching { file.parentFile?.mkdirs() }
             loadCacheLocked(file, System.currentTimeMillis())
             initialized = true
         }
+        refreshDatabaseStats(force = true)
+        publishState()
+    }
+
+    fun configure(settings: FsrBridgeSettings) {
+        synchronized(lock) {
+            currentSettings = settings
+            recorder?.configure(settings)
+            trimHistory(System.currentTimeMillis())
+        }
+        _state.update { it.copy(settings = settings) }
         publishState()
     }
 
     fun updateMcpState(mcpState: McpServerState) {
         _state.update { it.copy(mcpState = mcpState) }
+    }
+
+    fun updateSupabaseSyncState(syncState: SupabaseSyncState) {
+        _state.update { it.copy(supabaseSyncState = syncState) }
     }
 
     fun updateMcpEnabled(enabled: Boolean) {
@@ -146,6 +176,9 @@ object FsrDataHub {
         sampleMissingKnown: Boolean = false
     ) {
         val now = System.currentTimeMillis()
+        val readingsForRecorder: List<FsrSensorReading>
+        val shouldRecord: Boolean
+        val selectedDevice = _state.value.selectedDevice
         val acceptedConfigs = configs
             .filter { it.direction == PIN_DIRECTION_INPUT && it.mode == PIN_MODE_ANALOG }
             .sortedBy { it.pin }
@@ -197,6 +230,17 @@ object FsrDataHub {
                     }
             }
             trimHistory(now)
+            readingsForRecorder = latestReadings.values
+                .sortedWith(compareBy<FsrSensorReading> { it.pin ?: Int.MAX_VALUE }.thenBy { it.name })
+            val minimumGap = maxOf(100L, (currentSettings.sampleIntervalMs * 8L) / 10L)
+            shouldRecord = readingsForRecorder.isNotEmpty() && now - lastSampleRecordedAt >= minimumGap
+            if (shouldRecord) {
+                lastSampleRecordedAt = now
+            }
+        }
+        if (shouldRecord) {
+            recorder?.record(selectedDevice, readingsForRecorder, now)
+            refreshDatabaseStats()
         }
         publishState()
         persistCacheSnapshot()
@@ -204,6 +248,9 @@ object FsrDataHub {
 
     fun acceptExternalSensorPayload(values: Map<String, Int>) {
         val now = System.currentTimeMillis()
+        val readingsForRecorder: List<FsrSensorReading>
+        val shouldRecord: Boolean
+        val selectedDevice = _state.value.selectedDevice
         synchronized(lock) {
             values.toSortedMap().forEach { (rawName, rawValue) ->
                 val key = "push_${rawName.trim()}"
@@ -217,6 +264,17 @@ object FsrDataHub {
                 )
             }
             trimHistory(now)
+            readingsForRecorder = latestReadings.values
+                .sortedWith(compareBy<FsrSensorReading> { it.pin ?: Int.MAX_VALUE }.thenBy { it.name })
+            val minimumGap = maxOf(100L, (currentSettings.sampleIntervalMs * 8L) / 10L)
+            shouldRecord = readingsForRecorder.isNotEmpty() && now - lastSampleRecordedAt >= minimumGap
+            if (shouldRecord) {
+                lastSampleRecordedAt = now
+            }
+        }
+        if (shouldRecord) {
+            recorder?.record(selectedDevice, readingsForRecorder, now)
+            refreshDatabaseStats()
         }
         publishState()
         persistCacheSnapshot()
@@ -243,13 +301,15 @@ object FsrDataHub {
         compressionTolerance: Int = DEFAULT_COMPRESSION_TOLERANCE
     ): FsrHistoryResult {
         val now = System.currentTimeMillis()
+        val windowMs = currentSettings.historyWindowMs
         val safeTo = (toMs ?: now).coerceAtMost(now)
         val safeFrom = when {
             fromMs != null -> fromMs
             lastMs != null -> safeTo - lastMs
-            else -> safeTo - HISTORY_WINDOW_MS
-        }.coerceAtLeast(safeTo - HISTORY_WINDOW_MS)
-        val safeInterval = (intervalMs ?: DEFAULT_SAMPLING_INTERVAL_MS).coerceAtLeast(DEFAULT_SAMPLING_INTERVAL_MS)
+            else -> safeTo - windowMs
+        }.coerceAtLeast(safeTo - windowMs)
+        val defaultInterval = currentSettings.sampleIntervalMs.toInt().coerceAtLeast(100)
+        val safeInterval = (intervalMs ?: defaultInterval).coerceAtLeast(100)
 
         val series = synchronized(lock) {
             history.mapNotNull { (key, points) ->
@@ -302,6 +362,49 @@ object FsrDataHub {
             )
         }
         return result
+    }
+
+    fun querySessions(limit: Int, sinceMs: Long?): List<FsrSessionSummary> {
+        return database?.querySessions(limit = limit, sinceMs = sinceMs).orEmpty()
+    }
+
+    fun queryEvents(
+        fromMs: Long,
+        toMs: Long,
+        names: Set<String>,
+        type: String?,
+        sessionId: String?,
+        limit: Int
+    ): List<FsrLocalEvent> {
+        return database?.queryEvents(
+            fromMs = fromMs,
+            toMs = toMs,
+            names = names,
+            type = type,
+            sessionId = sessionId,
+            limit = limit
+        ).orEmpty()
+    }
+
+    fun queryWindow(
+        fromMs: Long,
+        toMs: Long,
+        limit: Int
+    ): FsrWindowResult {
+        recorder?.flushCurrentMinute()
+        return database?.queryMinuteWindow(fromMs = fromMs, toMs = toMs, limit = limit)
+            ?: FsrWindowResult(fromMs, toMs, "minute", listOf("dt", "summary", "n"), emptyList())
+    }
+
+    fun exportDatabase(context: Context): File? {
+        val file = database?.exportToJson(context.applicationContext)
+        refreshDatabaseStats(force = true)
+        return file
+    }
+
+    fun flushRecorder() {
+        recorder?.flushCurrentMinute()
+        refreshDatabaseStats(force = true)
     }
 
     private fun appendReading(
@@ -362,6 +465,7 @@ object FsrDataHub {
 
     private fun publishState() {
         val now = System.currentTimeMillis()
+        val windowMs = currentSettings.historyWindowMs
         val configs: List<PinConfig>
         val readings: List<FsrSensorReading>
         val uiHistory: Map<String, List<PinHistoryPoint>>
@@ -372,7 +476,7 @@ object FsrDataHub {
             uiHistory = history.mapValues { (_, points) ->
                 points.map { point ->
                     PinHistoryPoint(
-                        second = ((point.t - (now - HISTORY_WINDOW_MS)) / 1000L).toInt().coerceAtLeast(0),
+                        second = ((point.t - (now - windowMs)) / 1000L).toInt().coerceAtLeast(0),
                         value = point.value
                     )
                 }
@@ -388,7 +492,7 @@ object FsrDataHub {
     }
 
     private fun trimHistory(now: Long) {
-        val oldest = now - HISTORY_WINDOW_MS
+        val oldest = now - currentSettings.historyWindowMs
         history.values.forEach { points ->
             while (points.firstOrNull()?.t?.let { it < oldest } == true) {
                 points.removeFirst()
@@ -410,7 +514,7 @@ object FsrDataHub {
         history.clear()
         changeEvents.clear()
 
-        val oldest = now - HISTORY_WINDOW_MS
+        val oldest = now - currentSettings.historyWindowMs
         loaded.latestConfigs.orEmpty()
             .filter { it.direction == PIN_DIRECTION_INPUT && it.mode == PIN_MODE_ANALOG }
             .forEach { config ->
@@ -469,11 +573,19 @@ object FsrDataHub {
     }
 
     private fun List<FsrHistoryPoint>.downSample(fromMs: Long, intervalMs: Int): List<FsrHistoryPoint> {
-        if (intervalMs <= DEFAULT_SAMPLING_INTERVAL_MS) return this
+        if (intervalMs <= currentSettings.sampleIntervalMs) return this
         return groupBy { ((it.t - fromMs).coerceAtLeast(0L) / intervalMs) }
             .values
             .mapNotNull { it.lastOrNull() }
             .sortedBy { it.t }
+    }
+
+    private fun refreshDatabaseStats(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastStatsPublishedAt < DATABASE_STATS_REFRESH_MS) return
+        lastStatsPublishedAt = now
+        val stats = database?.getStats() ?: FsrDatabaseStats()
+        _state.update { it.copy(databaseStats = stats) }
     }
 
     private fun List<FsrHistoryPoint>.compress(tolerance: Int): List<FsrHistorySegment> {

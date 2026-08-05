@@ -12,6 +12,9 @@ const val CONFIG_KIND_GPIO = "gpio"
 
 const val FSR_ANALOG_MAX_VALUE = 4095
 const val MCP_DEFAULT_PORT = 9333
+const val DEFAULT_FSR_HISTORY_WINDOW_MS = 60_000L
+const val DEFAULT_FSR_SAMPLE_INTERVAL_MS = 1_000L
+const val DEFAULT_FSR_TRIGGER_THRESHOLD = 300
 
 val FSR_SENSOR_PINS = (1..10).toList()
 
@@ -159,6 +162,94 @@ data class McpServerState(
     val url: String
         get() = "http://$host:$port/mcp"
 }
+
+data class SupabaseSettings(
+    val enabled: Boolean = false,
+    val projectUrl: String = "",
+    val anonKey: String = "",
+    val minuteDataTable: String = "fsr_minute_data",
+    val sessionsTable: String = "fsr_sessions"
+) {
+    val configured: Boolean
+        get() = projectUrl.trim().isNotBlank() && anonKey.trim().isNotBlank()
+}
+
+data class FsrBridgeSettings(
+    val historyWindowMs: Long = DEFAULT_FSR_HISTORY_WINDOW_MS,
+    val sampleIntervalMs: Long = DEFAULT_FSR_SAMPLE_INTERVAL_MS,
+    val triggerThreshold: Int = DEFAULT_FSR_TRIGGER_THRESHOLD,
+    val supabase: SupabaseSettings = SupabaseSettings()
+)
+
+data class FsrDatabaseStats(
+    val sampleRows: Long = 0,
+    val eventRows: Long = 0,
+    val sessionRows: Long = 0,
+    val minuteRows: Long = 0,
+    val pendingUploads: Long = 0,
+    val lastSampleAtMs: Long? = null
+)
+
+data class SupabaseSyncState(
+    val enabled: Boolean = false,
+    val configured: Boolean = false,
+    val syncing: Boolean = false,
+    val lastSyncAtMs: Long? = null,
+    val lastMessage: String? = null,
+    val lastError: String? = null
+)
+
+data class FsrLocalEvent(
+    val id: Long = 0,
+    val sessionId: String,
+    val startMs: Long,
+    val endMs: Long,
+    val type: String,
+    val sensors: List<String>,
+    val peakValue: Int,
+    val avgValue: Int,
+    val summary: String
+) {
+    val durationMs: Long
+        get() = (endMs - startMs).coerceAtLeast(0L)
+}
+
+data class FsrSessionSummary(
+    val id: String,
+    val startMs: Long,
+    val endMs: Long,
+    val durationMs: Long,
+    val avgPressure: Float,
+    val maxPressure: Int,
+    val hugCount: Int,
+    val pokeCount: Int,
+    val pinchCount: Int,
+    val strokeCount: Int,
+    val pressCount: Int,
+    val summary: String,
+    val updatedAtMs: Long
+)
+
+data class FsrMinuteRollup(
+    val localId: Long = 0,
+    val remoteId: String,
+    val sessionId: String,
+    val minuteStartMs: Long,
+    val deviceMac: String?,
+    val deviceName: String?,
+    val samples: Int,
+    val valuesJson: String,
+    val summary: String,
+    val uploaded: Boolean = false
+)
+
+data class FsrWindowResult(
+    val fromMs: Long,
+    val toMs: Long,
+    val mode: String,
+    val cols: List<String>,
+    val rows: List<List<Any?>>
+)
 
 data class FsrHistoryPoint(
     val t: Long,

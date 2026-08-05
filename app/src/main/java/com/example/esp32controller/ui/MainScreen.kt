@@ -1,7 +1,16 @@
 package com.example.esp32controller.ui
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -80,6 +89,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -90,15 +100,22 @@ import com.example.esp32controller.model.BleScanDevice
 import com.example.esp32controller.model.DeviceUiModel
 import com.example.esp32controller.model.FSR_ANALOG_MAX_VALUE
 import com.example.esp32controller.model.FSR_SENSOR_PINS
+import com.example.esp32controller.model.FsrBridgeSettings
+import com.example.esp32controller.model.FsrDatabaseStats
 import com.example.esp32controller.model.FsrSensorReading
 import com.example.esp32controller.model.McpServerState
 import com.example.esp32controller.model.PinConfig
 import com.example.esp32controller.model.PinHistoryPoint
+import com.example.esp32controller.model.SupabaseSettings
+import com.example.esp32controller.model.SupabaseSyncState
 import com.example.esp32controller.model.WifiNetworkOption
 import com.example.esp32controller.viewmodel.MainUiState
 import com.example.esp32controller.viewmodel.displayLabel
 import com.example.esp32controller.viewmodel.sensorKey
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -156,6 +173,13 @@ fun MainScreen(
     onDeleteDevice: (String) -> Unit,
     onOpenSensorPanel: () -> Unit,
     onCloseSensorPanel: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onCloseSettings: () -> Unit,
+    onUpdateHistoryWindow: (Long) -> Unit,
+    onUpdateSampleInterval: (Long) -> Unit,
+    onUpdateTriggerThreshold: (Int) -> Unit,
+    onUpdateSupabaseSettings: (SupabaseSettings) -> Unit,
+    onExportDatabase: () -> Unit,
     onSaveFsrSensor: (Int, String) -> Unit,
     onDeleteSensor: (PinConfig) -> Unit,
     onRetryMdns: () -> Unit,
@@ -191,6 +215,7 @@ fun MainScreen(
                 if (uiState.pairingStep == 0) onClosePairing() else onPairingBack(uiState.pairingStep)
             }
             uiState.sensorPanelVisible -> onCloseSensorPanel()
+            uiState.settingsVisible -> onCloseSettings()
             toolsDetailVisible -> toolsDetailVisible = false
             else -> {
                 val now = System.currentTimeMillis()
@@ -209,13 +234,16 @@ fun MainScreen(
     Scaffold(
         containerColor = AppBackground,
         topBar = {
-            if (!uiState.pairingVisible && !uiState.sensorPanelVisible && !toolsDetailVisible) {
-                MainTopBar(onOpenPairing = onOpenPairing)
+            if (!uiState.pairingVisible && !uiState.sensorPanelVisible && !uiState.settingsVisible && !toolsDetailVisible) {
+                MainTopBar(
+                    onOpenPairing = onOpenPairing,
+                    onOpenSettings = onOpenSettings
+                )
             }
         },
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         bottomBar = {
-            if (!uiState.pairingVisible && !uiState.sensorPanelVisible && !toolsDetailVisible) {
+            if (!uiState.pairingVisible && !uiState.sensorPanelVisible && !uiState.settingsVisible && !toolsDetailVisible) {
                 DetailBottomBar(
                     expanded = detailsExpanded,
                     onToggle = { detailsExpanded = !detailsExpanded }
@@ -255,6 +283,18 @@ fun MainScreen(
                 )
             }
 
+            AnimatedVisibility(visible = uiState.settingsVisible && !uiState.pairingVisible && !uiState.sensorPanelVisible) {
+                SettingsScreen(
+                    uiState = uiState,
+                    onClose = onCloseSettings,
+                    onUpdateHistoryWindow = onUpdateHistoryWindow,
+                    onUpdateSampleInterval = onUpdateSampleInterval,
+                    onUpdateTriggerThreshold = onUpdateTriggerThreshold,
+                    onUpdateSupabaseSettings = onUpdateSupabaseSettings,
+                    onExportDatabase = onExportDatabase
+                )
+            }
+
             AnimatedVisibility(visible = uiState.pairingVisible) {
                 PairingFlowScreen(
                     uiState = uiState,
@@ -268,7 +308,7 @@ fun MainScreen(
                 )
             }
 
-            AnimatedVisibility(visible = toolsDetailVisible && !uiState.pairingVisible && !uiState.sensorPanelVisible) {
+            AnimatedVisibility(visible = toolsDetailVisible && !uiState.pairingVisible && !uiState.sensorPanelVisible && !uiState.settingsVisible) {
                 ToolsDetailScreen(onClose = { toolsDetailVisible = false })
             }
         }
@@ -300,7 +340,10 @@ fun MainScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MainTopBar(onOpenPairing: () -> Unit) {
+private fun MainTopBar(
+    onOpenPairing: () -> Unit,
+    onOpenSettings: () -> Unit
+) {
     TopAppBar(
         title = {
             Column {
@@ -309,6 +352,9 @@ private fun MainTopBar(onOpenPairing: () -> Unit) {
             }
         },
         actions = {
+            IconButton(onClick = onOpenSettings) {
+                Icon(Icons.Default.Settings, contentDescription = "设置")
+            }
             Box(
                 modifier = Modifier.padding(end = 34.dp)
             ) {
@@ -706,7 +752,11 @@ private fun MiniReadingCard(
             DeltaChip(reading.delta)
         }
         Spacer(Modifier.height(8.dp))
-        Text("${reading.value}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black, color = Ink)
+        RollingNumberText(
+            value = reading.value,
+            style = MaterialTheme.typography.headlineSmall,
+            color = Ink
+        )
         Spacer(Modifier.height(8.dp))
         LevelBar(reading.normalized)
         Spacer(Modifier.height(6.dp))
@@ -862,7 +912,11 @@ private fun SensorConfigCard(
         }
         Spacer(Modifier.height(12.dp))
         Row(verticalAlignment = Alignment.Bottom) {
-            Text("$value", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Black, color = Ink)
+            RollingNumberText(
+                value = value,
+                style = MaterialTheme.typography.displaySmall,
+                color = Ink
+            )
             Spacer(Modifier.width(10.dp))
             DeltaChip(delta)
         }
@@ -870,6 +924,375 @@ private fun SensorConfigCard(
         LevelBar(normalized)
         Spacer(Modifier.height(14.dp))
         FsrHistoryChart(history)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SettingsScreen(
+    uiState: MainUiState,
+    onClose: () -> Unit,
+    onUpdateHistoryWindow: (Long) -> Unit,
+    onUpdateSampleInterval: (Long) -> Unit,
+    onUpdateTriggerThreshold: (Int) -> Unit,
+    onUpdateSupabaseSettings: (SupabaseSettings) -> Unit,
+    onExportDatabase: () -> Unit
+) {
+    Surface(color = ScreenSurface, modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            containerColor = Color.Transparent,
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text("设置", fontWeight = FontWeight.Bold)
+                            Text("采样、历史、导出与 Supabase", style = MaterialTheme.typography.bodySmall, color = Muted)
+                        }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onClose) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                        }
+                    }
+                )
+            }
+        ) { paddingValues ->
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues),
+                contentPadding = PaddingValues(start = 18.dp, top = 12.dp, end = 18.dp, bottom = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                item {
+                    SamplingSettingsCard(
+                        settings = uiState.settings,
+                        onUpdateHistoryWindow = onUpdateHistoryWindow,
+                        onUpdateSampleInterval = onUpdateSampleInterval,
+                        onUpdateTriggerThreshold = onUpdateTriggerThreshold
+                    )
+                }
+                item {
+                    LocalDatabaseCard(
+                        stats = uiState.databaseStats,
+                        exportBusy = uiState.exportBusy,
+                        exportMessage = uiState.exportMessage,
+                        onExportDatabase = onExportDatabase
+                    )
+                }
+                item {
+                    SupabaseSettingsCard(
+                        settings = uiState.settings.supabase,
+                        syncState = uiState.supabaseSyncState,
+                        onUpdateSupabaseSettings = onUpdateSupabaseSettings
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SamplingSettingsCard(
+    settings: FsrBridgeSettings,
+    onUpdateHistoryWindow: (Long) -> Unit,
+    onUpdateSampleInterval: (Long) -> Unit,
+    onUpdateTriggerThreshold: (Int) -> Unit
+) {
+    var customHistorySeconds by rememberSaveable(settings.historyWindowMs) {
+        mutableStateOf((settings.historyWindowMs / 1000L).toString())
+    }
+    var customIntervalMs by rememberSaveable(settings.sampleIntervalMs) {
+        mutableStateOf(settings.sampleIntervalMs.toString())
+    }
+    var thresholdText by rememberSaveable(settings.triggerThreshold) {
+        mutableStateOf(settings.triggerThreshold.toString())
+    }
+
+    FrostedCard {
+        Text("采样与短期历史", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Ink)
+        Spacer(Modifier.height(6.dp))
+        Text("短期历史给实时 MCP 工具使用；长期记录会持续写入手机本地数据库。", color = Muted)
+        Spacer(Modifier.height(16.dp))
+
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+            MetricPill(
+                title = "短期历史",
+                value = (settings.historyWindowMs / 1000L).toInt(),
+                unit = "秒",
+                modifier = Modifier.weight(1f)
+            )
+            MetricPill(
+                title = "保存间隔",
+                value = settings.sampleIntervalMs.toInt(),
+                unit = "毫秒",
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+        Text("短期历史保存时间", fontWeight = FontWeight.SemiBold, color = Ink)
+        Spacer(Modifier.height(8.dp))
+        ChoiceGrid(
+            options = listOf("15 秒" to 15_000L, "30 秒" to 30_000L, "45 秒" to 45_000L, "60 秒" to 60_000L),
+            selected = settings.historyWindowMs,
+            onSelect = onUpdateHistoryWindow
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedTextField(
+                value = customHistorySeconds,
+                onValueChange = { customHistorySeconds = it.filter { char -> char.isDigit() }.take(6) },
+                label = { Text("自定义秒数") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.weight(1f)
+            )
+            Button(
+                onClick = {
+                    customHistorySeconds.toLongOrNull()?.let { onUpdateHistoryWindow(it * 1000L) }
+                },
+                shape = RoundedCornerShape(999.dp)
+            ) {
+                Text("应用")
+            }
+        }
+
+        Spacer(Modifier.height(18.dp))
+        Text("保存频率", fontWeight = FontWeight.SemiBold, color = Ink)
+        Spacer(Modifier.height(8.dp))
+        ChoiceGrid(
+            options = listOf("0.25 秒" to 250L, "0.5 秒" to 500L, "1 秒" to 1_000L, "1.5 秒" to 1_500L),
+            selected = settings.sampleIntervalMs,
+            onSelect = onUpdateSampleInterval
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedTextField(
+                value = customIntervalMs,
+                onValueChange = { customIntervalMs = it.filter { char -> char.isDigit() }.take(6) },
+                label = { Text("自定义毫秒") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.weight(1f)
+            )
+            Button(
+                onClick = {
+                    customIntervalMs.toLongOrNull()?.let(onUpdateSampleInterval)
+                },
+                shape = RoundedCornerShape(999.dp)
+            ) {
+                Text("应用")
+            }
+        }
+
+        Spacer(Modifier.height(18.dp))
+        OutlinedTextField(
+            value = thresholdText,
+            onValueChange = { thresholdText = it.filter { char -> char.isDigit() }.take(4) },
+            label = { Text("触发阈值") },
+            supportingText = { Text("默认 300。超过阈值才进入戳、按、抱住不放等事件判断。") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            modifier = Modifier.fillMaxWidth()
+        )
+        Button(
+            onClick = { thresholdText.toIntOrNull()?.let(onUpdateTriggerThreshold) },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(999.dp)
+        ) {
+            Text("保存阈值")
+        }
+    }
+}
+
+@Composable
+private fun LocalDatabaseCard(
+    stats: FsrDatabaseStats,
+    exportBusy: Boolean,
+    exportMessage: String?,
+    onExportDatabase: () -> Unit
+) {
+    FrostedCard {
+        Text("本地数据库", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Ink)
+        Spacer(Modifier.height(6.dp))
+        Text("采样数据会追加写入 App 私有数据区；导出不会删除旧记录，也不会停止新记录写入。", color = Muted)
+        Spacer(Modifier.height(14.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            MetricPill("采样行", stats.sampleRows.toIntSafe(), "行", Modifier.weight(1f))
+            MetricPill("事件", stats.eventRows.toIntSafe(), "条", Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            MetricPill("分钟摘要", stats.minuteRows.toIntSafe(), "条", Modifier.weight(1f))
+            MetricPill("待上传", stats.pendingUploads.toIntSafe(), "条", Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(12.dp))
+        InfoLine("最近采样", stats.lastSampleAtMs?.let(::formatClockTime) ?: "还没有数据")
+        Button(
+            onClick = onExportDatabase,
+            enabled = !exportBusy,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(999.dp)
+        ) {
+            Text(if (exportBusy) "正在导出..." else "导出 JSON")
+        }
+        if (!exportMessage.isNullOrBlank()) {
+            Spacer(Modifier.height(8.dp))
+            Text(exportMessage, color = Muted, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun SupabaseSettingsCard(
+    settings: SupabaseSettings,
+    syncState: SupabaseSyncState,
+    onUpdateSupabaseSettings: (SupabaseSettings) -> Unit
+) {
+    var enabled by rememberSaveable(settings.enabled) { mutableStateOf(settings.enabled) }
+    var projectUrl by rememberSaveable(settings.projectUrl) { mutableStateOf(settings.projectUrl) }
+    var anonKey by rememberSaveable(settings.anonKey) { mutableStateOf(settings.anonKey) }
+    var minuteTable by rememberSaveable(settings.minuteDataTable) { mutableStateOf(settings.minuteDataTable) }
+    var sessionsTable by rememberSaveable(settings.sessionsTable) { mutableStateOf(settings.sessionsTable) }
+
+    fun currentSettings(nextEnabled: Boolean = enabled): SupabaseSettings {
+        return SupabaseSettings(
+            enabled = nextEnabled,
+            projectUrl = projectUrl,
+            anonKey = anonKey,
+            minuteDataTable = minuteTable,
+            sessionsTable = sessionsTable
+        )
+    }
+
+    FrostedCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Supabase 云同步", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Ink)
+                Text("App 每分钟直传聚合数据，MCP 只负责查询。", color = Muted)
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = {
+                    enabled = it
+                    onUpdateSupabaseSettings(currentSettings(nextEnabled = it))
+                }
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = projectUrl,
+            onValueChange = { projectUrl = it },
+            label = { Text("项目地址") },
+            placeholder = { Text("https://xxxxx.supabase.co") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(10.dp))
+        OutlinedTextField(
+            value = anonKey,
+            onValueChange = { anonKey = it },
+            label = { Text("anon key") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(
+                value = minuteTable,
+                onValueChange = { minuteTable = it },
+                label = { Text("分钟表") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            OutlinedTextField(
+                value = sessionsTable,
+                onValueChange = { sessionsTable = it },
+                label = { Text("会话表") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        Button(
+            onClick = { onUpdateSupabaseSettings(currentSettings()) },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(999.dp)
+        ) {
+            Text("保存 Supabase 设置")
+        }
+        Spacer(Modifier.height(10.dp))
+        val statusText = when {
+            !syncState.enabled -> "云同步已关闭"
+            !syncState.configured -> "请填写项目地址和 anon key"
+            syncState.syncing -> "正在同步..."
+            !syncState.lastError.isNullOrBlank() -> syncState.lastError
+            !syncState.lastMessage.isNullOrBlank() -> syncState.lastMessage
+            else -> "等待下一次分钟同步"
+        }
+        Text(statusText, color = if (syncState.lastError.isNullOrBlank()) Muted else DangerRed)
+        syncState.lastSyncAtMs?.let {
+            Text("上次同步：${formatClockTime(it)}", color = Muted, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun ChoiceGrid(
+    options: List<Pair<String, Long>>,
+    selected: Long,
+    onSelect: (Long) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        options.chunked(2).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                row.forEach { (label, value) ->
+                    val active = selected == value
+                    OutlinedButton(
+                        onClick = { onSelect(value) },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = if (active) SelectedSurface else Color.Transparent,
+                            contentColor = if (active) ActiveBlue else Ink
+                        ),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text(label)
+                    }
+                }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun MetricPill(
+    title: String,
+    value: Int,
+    unit: String,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(CardInner)
+            .border(1.dp, Line, RoundedCornerShape(20.dp))
+            .padding(14.dp)
+    ) {
+        Text(title, style = MaterialTheme.typography.labelMedium, color = Muted)
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.Bottom) {
+            RollingNumberText(
+                value = value,
+                style = MaterialTheme.typography.headlineSmall,
+                color = Ink
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(unit, color = Muted, modifier = Modifier.padding(bottom = 4.dp))
+        }
     }
 }
 
@@ -970,6 +1393,46 @@ private fun PinDropdown(
     }
 }
 
+@OptIn(ExperimentalAnimationApi::class)
+@Composable
+private fun RollingNumberText(
+    value: Int,
+    style: TextStyle,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    AnimatedContent(
+        targetState = value,
+        transitionSpec = {
+            val direction = if (targetState >= initialState) 1 else -1
+            (
+                slideInVertically(
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        stiffness = Spring.StiffnessLow
+                    )
+                ) { fullHeight -> direction * fullHeight } + fadeIn()
+                ).togetherWith(
+                    slideOutVertically(
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMediumLow
+                        )
+                    ) { fullHeight -> -direction * fullHeight } + fadeOut()
+                )
+        },
+        label = "rolling-number",
+        modifier = modifier
+    ) { number ->
+        Text(
+            text = number.toString(),
+            style = style,
+            fontWeight = FontWeight.Black,
+            color = color
+        )
+    }
+}
+
 @Composable
 private fun DeltaChip(delta: Int) {
     val color = when {
@@ -989,6 +1452,14 @@ private fun DeltaChip(delta: Int) {
     ) {
         Text("$sign$delta", color = color, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
     }
+}
+
+private fun Long.toIntSafe(): Int {
+    return coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+}
+
+private fun formatClockTime(timestampMs: Long): String {
+    return SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date(timestampMs))
 }
 
 @Composable
@@ -1110,10 +1581,38 @@ private val mcpToolDocs = listOf(
     ),
     McpToolDoc(
         name = "fsr_get_history",
-        purpose = "读取最近 2 分钟的 App 私有数据区历史缓存。",
+        purpose = "读取 App 私有数据区的短期历史缓存。",
         setting = "默认返回压缩段，尽量省 token；需要原始点时传 mode=raw 或 includeRaw=true。",
-        inputs = listOf("name/names：筛选传感器", "lastMs：最近多少毫秒，默认 120000", "fromMs/toMs：时间戳范围", "intervalMs：抽样间隔，默认 500", "compressionTolerance：稳定段压缩容差，默认 15", "mode：默认 segments，可传 raw"),
+        inputs = listOf("name/names：筛选传感器", "lastMs：最近多少毫秒，默认跟随设置里的短期历史", "fromMs/toMs：时间戳范围", "intervalMs：抽样间隔，默认跟随保存频率", "compressionTolerance：稳定段压缩容差，默认 15", "mode：默认 segments，可传 raw"),
         returns = listOf("t0/to/max/mode：时间基准、结束时间、ADC 最大值、返回模式", "segments 模式 cols=[from,to,v]", "raw 模式 cols=[t,v]", "series：每个传感器的紧凑数组")
+    ),
+    McpToolDoc(
+        name = "fsr_list_sessions",
+        purpose = "读取手机本地数据库里的最近触摸会话摘要。",
+        setting = "适合白天问 AI 昨晚有没有被抱、被按或被摸；默认只给摘要，不吐原始点。",
+        inputs = listOf("limit：最多返回多少条，默认 12", "sinceMs：只看某个时间戳之后"),
+        returns = listOf("cols=[id,from,to,durS,max,summary]", "data：会话 id、开始、结束、持续秒数、峰值、摘要")
+    ),
+    McpToolDoc(
+        name = "fsr_get_session_summary",
+        purpose = "读取一个会话的摘要和少量事件。",
+        setting = "不传 id 时默认读取最近会话；需要深挖时再调用这个工具。",
+        inputs = listOf("id：会话 id", "limit：最多带回多少条事件，默认 40"),
+        returns = listOf("id/from/to/durS/avg/max/counts/summary", "eventCols=[dt,type,s,durMs,peak]", "events：相对会话开始时间的事件列表")
+    ),
+    McpToolDoc(
+        name = "fsr_get_events",
+        purpose = "按时间窗口读取已分类的触摸事件。",
+        setting = "事件由 App 本地规则生成，AI 不需要从原始 ADC 点里猜。",
+        inputs = listOf("fromMs/toMs：时间戳范围", "lastMs：最近多少毫秒，默认 8 小时", "name/type/sessionId：可筛选", "limit：最多返回多少条，默认 80"),
+        returns = listOf("t0：窗口开始", "cols=[dt,type,s,durMs,peak]", "data：相对时间、类型、传感器、持续毫秒、峰值")
+    ),
+    McpToolDoc(
+        name = "fsr_get_window",
+        purpose = "读取长期数据库里的分钟级摘要窗口。",
+        setting = "适合看整晚趋势，默认返回分钟摘要，不返回海量原始采样。",
+        inputs = listOf("fromMs/toMs：时间戳范围", "lastMs：最近多少毫秒，默认 8 小时", "limit：最多返回多少个分钟点，默认 480"),
+        returns = listOf("t0/to/mode/cols", "data：分钟偏移、摘要、该分钟采样数")
     )
 )
 
@@ -1137,7 +1636,7 @@ private fun ToolsDetailScreen(onClose: () -> Unit) {
             ) {
                 item {
                     Text(
-                        "第三方 AI 应用通过这些 tools 读取手机本地 2 分钟缓存和当前 FSR 数据。工具名称需要保持英文，参数建议优先使用 App 中的中文传感器名称。",
+                        "第三方 AI 应用通过这些 MCP 工具读取手机本地短期缓存、长期会话摘要和当前 FSR 数据。工具名称需要保持英文，参数建议优先使用 App 中的中文传感器名称。",
                         color = Muted
                     )
                 }

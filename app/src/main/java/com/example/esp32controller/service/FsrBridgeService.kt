@@ -22,6 +22,9 @@ import com.example.esp32controller.data.mdns.MdnsResolver
 import com.example.esp32controller.data.network.Esp32ApiClient
 import com.example.esp32controller.data.network.Esp32ApiService
 import com.example.esp32controller.data.storage.DeviceStore
+import com.example.esp32controller.data.storage.FsrSettingsStore
+import com.example.esp32controller.data.supabase.SupabaseUploader
+import com.example.esp32controller.model.FsrBridgeSettings
 import com.example.esp32controller.model.DEFAULT_MDNS_HOST
 import com.example.esp32controller.model.PIN_DIRECTION_INPUT
 import com.example.esp32controller.model.PIN_MODE_ANALOG
@@ -40,8 +43,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 private const val CHANNEL_ID = "fsr_bridge_service"
 private const val NOTIFICATION_ID = 402
-private const val POLL_INTERVAL_MS = 500L
 private const val FULL_REFRESH_INTERVAL_MS = 10_000L
+private const val SUPABASE_SYNC_INTERVAL_MS = 60_000L
 
 class FsrBridgeService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -49,15 +52,21 @@ class FsrBridgeService : Service() {
     private val apiClient = Esp32ApiClient()
 
     private lateinit var deviceStore: DeviceStore
+    private lateinit var settingsStore: FsrSettingsStore
     private lateinit var mdnsResolver: MdnsResolver
     private lateinit var bleProvisioningManager: BleProvisioningManager
+    private lateinit var supabaseUploader: SupabaseUploader
 
     private var mcpServer: FsrMcpServer? = null
     private var mcpStateJob: Job? = null
     private var pollJob: Job? = null
     private var notificationJob: Job? = null
     private var bleStatusJob: Job? = null
+    private var settingsJob: Job? = null
+    private var supabaseJob: Job? = null
+    private var supabaseStateJob: Job? = null
     private var mcpEnabled: Boolean = true
+    private var latestSettings = FsrBridgeSettings()
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
@@ -65,12 +74,19 @@ class FsrBridgeService : Service() {
         super.onCreate()
         FsrDataHub.initialize(applicationContext)
         deviceStore = DeviceStore(applicationContext, gson)
+        settingsStore = FsrSettingsStore(applicationContext)
         mdnsResolver = MdnsResolver(applicationContext)
         bleProvisioningManager = BleProvisioningManager(applicationContext)
+        supabaseUploader = SupabaseUploader(
+            database = com.example.esp32controller.data.fsr.FsrLocalDatabase.get(applicationContext, gson),
+            gson = gson
+        )
         mcpEnabled = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getBoolean(KEY_MCP_ENABLED, true)
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("正在启动 MCP 服务"))
         acquireLocks()
+        observeSettings()
+        observeSupabaseState()
         if (mcpEnabled) {
             startMcpServer()
         } else {
@@ -93,6 +109,10 @@ class FsrBridgeService : Service() {
         pollJob?.cancel()
         notificationJob?.cancel()
         bleStatusJob?.cancel()
+        settingsJob?.cancel()
+        supabaseJob?.cancel()
+        supabaseStateJob?.cancel()
+        FsrDataHub.flushRecorder()
         stopMcpServer()
         runCatching { wifiLock?.release() }
         runCatching { wakeLock?.release() }
@@ -107,6 +127,9 @@ class FsrBridgeService : Service() {
             snapshotProvider = FsrDataHub::buildMcpSnapshot,
             historyProvider = FsrDataHub::queryHistory,
             changesProvider = FsrDataHub::queryChanges,
+            sessionsProvider = FsrDataHub::querySessions,
+            eventsProvider = FsrDataHub::queryEvents,
+            windowProvider = FsrDataHub::queryWindow,
             onSensorPost = FsrDataHub::acceptExternalSensorPayload
         )
         mcpServer = server
@@ -115,6 +138,39 @@ class FsrBridgeService : Service() {
         mcpStateJob = scope.launch {
             server.state.collect { state ->
                 FsrDataHub.updateMcpState(state)
+            }
+        }
+    }
+
+    private fun observeSettings() {
+        settingsJob = scope.launch {
+            settingsStore.settingsFlow.collectLatest { settings ->
+                latestSettings = settings
+                FsrDataHub.configure(settings)
+                startSupabaseLoop(settings)
+            }
+        }
+    }
+
+    private fun observeSupabaseState() {
+        supabaseStateJob = scope.launch {
+            supabaseUploader.state.collect { state ->
+                FsrDataHub.updateSupabaseSyncState(state)
+            }
+        }
+    }
+
+    private fun startSupabaseLoop(settings: FsrBridgeSettings) {
+        supabaseJob?.cancel()
+        supabaseJob = scope.launch {
+            if (!settings.supabase.enabled || !settings.supabase.configured) {
+                supabaseUploader.sync(settings.supabase)
+                return@launch
+            }
+            while (isActive) {
+                FsrDataHub.flushRecorder()
+                supabaseUploader.sync(settings.supabase)
+                delay(SUPABASE_SYNC_INTERVAL_MS)
             }
         }
     }
@@ -215,7 +271,7 @@ class FsrBridgeService : Service() {
                     }
                 }
 
-                delay(POLL_INTERVAL_MS)
+                delay(latestSettings.sampleIntervalMs.coerceIn(100L, 60_000L))
             }
         }
     }

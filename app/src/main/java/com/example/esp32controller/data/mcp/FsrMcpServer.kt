@@ -5,12 +5,16 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.wifi.WifiManager
+import com.example.esp32controller.BuildConfig
 import com.example.esp32controller.model.FSR_ANALOG_MAX_VALUE
 import com.example.esp32controller.model.FsrChangesResult
 import com.example.esp32controller.model.FsrHistoryResult
+import com.example.esp32controller.model.FsrLocalEvent
 import com.example.esp32controller.model.FsrMcpSensor
 import com.example.esp32controller.model.FsrMcpSnapshot
+import com.example.esp32controller.model.FsrSessionSummary
 import com.example.esp32controller.model.FsrSensorReading
+import com.example.esp32controller.model.FsrWindowResult
 import com.example.esp32controller.model.MCP_DEFAULT_PORT
 import com.example.esp32controller.model.McpServerState
 import com.google.gson.Gson
@@ -56,6 +60,16 @@ class FsrMcpServer(
         names: Set<String>,
         minDelta: Int?
     ) -> FsrChangesResult,
+    private val sessionsProvider: (limit: Int, sinceMs: Long?) -> List<FsrSessionSummary>,
+    private val eventsProvider: (
+        fromMs: Long,
+        toMs: Long,
+        names: Set<String>,
+        type: String?,
+        sessionId: String?,
+        limit: Int
+    ) -> List<FsrLocalEvent>,
+    private val windowProvider: (fromMs: Long, toMs: Long, limit: Int) -> FsrWindowResult,
     private val onSensorPost: (Map<String, Int>) -> Unit
 ) {
     private val _state = MutableStateFlow(McpServerState())
@@ -146,7 +160,11 @@ class FsrMcpServer(
                 "fsr_get_snapshot",
                 "fsr_get_sensor",
                 "fsr_get_changes",
-                "fsr_get_history"
+                "fsr_get_history",
+                "fsr_list_sessions",
+                "fsr_get_session_summary",
+                "fsr_get_events",
+                "fsr_get_window"
             )
         )
         return HttpResponse(200, "application/json", gson.toJson(payload))
@@ -207,7 +225,7 @@ class FsrMcpServer(
                     "capabilities" to mapOf("tools" to emptyMap<String, Any>()),
                     "serverInfo" to mapOf(
                         "name" to "esp32-fsr-phone-bridge",
-                        "version" to "V2.3.25"
+                        "version" to BuildConfig.VERSION_NAME
                     )
                 )
             )
@@ -263,6 +281,58 @@ class FsrMcpServer(
                     arguments.get("compressionTolerance")?.asIntOrNull()?.coerceAtLeast(0) ?: 15
                 )
                 compactHistory(history, arguments)
+            }
+            "fsr_list_sessions" -> compactSessions(
+                sessionsProvider(
+                    arguments.get("limit")?.asIntOrNull() ?: 12,
+                    arguments.get("sinceMs")?.asLongOrNull()
+                )
+            )
+            "fsr_get_session_summary" -> {
+                val sessions = sessionsProvider(30, null)
+                val requestedId = arguments.get("id")?.asStringOrNull()
+                val session = if (requestedId.isNullOrBlank()) {
+                    sessions.firstOrNull()
+                } else {
+                    sessions.firstOrNull { it.id == requestedId }
+                }
+                if (session == null) {
+                    mapOf("error" to "session_not_found")
+                } else {
+                    val events = eventsProvider(
+                        session.startMs,
+                        session.endMs,
+                        emptySet(),
+                        null,
+                        session.id,
+                        arguments.get("limit")?.asIntOrNull() ?: 40
+                    )
+                    compactSessionSummary(session, events)
+                }
+            }
+            "fsr_get_events" -> {
+                val now = System.currentTimeMillis()
+                val toMs = arguments.get("toMs")?.asLongOrNull() ?: now
+                val fromMs = arguments.get("fromMs")?.asLongOrNull()
+                    ?: (toMs - (arguments.get("lastMs")?.asLongOrNull() ?: 8 * 60 * 60 * 1000L))
+                compactEvents(
+                    fromMs = fromMs,
+                    events = eventsProvider(
+                        fromMs,
+                        toMs,
+                        namesFromArguments(arguments),
+                        arguments.get("type")?.asStringOrNull(),
+                        arguments.get("sessionId")?.asStringOrNull(),
+                        arguments.get("limit")?.asIntOrNull() ?: 80
+                    )
+                )
+            }
+            "fsr_get_window" -> {
+                val now = System.currentTimeMillis()
+                val toMs = arguments.get("toMs")?.asLongOrNull() ?: now
+                val fromMs = arguments.get("fromMs")?.asLongOrNull()
+                    ?: (toMs - (arguments.get("lastMs")?.asLongOrNull() ?: 8 * 60 * 60 * 1000L))
+                compactWindow(windowProvider(fromMs, toMs, arguments.get("limit")?.asIntOrNull() ?: 480))
             }
             else -> return rpcError(id, -32602, "Unknown tool")
         }
@@ -351,6 +421,80 @@ class FsrMcpServer(
         )
     }
 
+    private fun compactSessions(sessions: List<FsrSessionSummary>): Map<String, Any?> {
+        return mapOf(
+            "cols" to listOf("id", "from", "to", "durS", "max", "summary"),
+            "data" to sessions.map { session ->
+                listOf(
+                    session.id,
+                    session.startMs,
+                    session.endMs,
+                    session.durationMs / 1000,
+                    session.maxPressure,
+                    session.summary
+                )
+            }
+        )
+    }
+
+    private fun compactSessionSummary(
+        session: FsrSessionSummary,
+        events: List<FsrLocalEvent>
+    ): Map<String, Any?> {
+        return mapOf(
+            "id" to session.id,
+            "from" to session.startMs,
+            "to" to session.endMs,
+            "durS" to session.durationMs / 1000,
+            "avg" to session.avgPressure.roundToInt(),
+            "max" to session.maxPressure,
+            "counts" to mapOf(
+                "抱住不放" to session.hugCount,
+                "捏" to session.pinchCount,
+                "抚摸" to session.strokeCount,
+                "戳" to session.pokeCount,
+                "按" to session.pressCount
+            ),
+            "summary" to session.summary,
+            "eventCols" to listOf("dt", "type", "s", "durMs", "peak"),
+            "events" to events.map { event ->
+                listOf(
+                    event.startMs - session.startMs,
+                    event.type,
+                    event.sensors.joinToString("+"),
+                    event.durationMs,
+                    event.peakValue
+                )
+            }
+        )
+    }
+
+    private fun compactEvents(fromMs: Long, events: List<FsrLocalEvent>): Map<String, Any?> {
+        return mapOf(
+            "t0" to fromMs,
+            "cols" to listOf("dt", "type", "s", "durMs", "peak"),
+            "data" to events.map { event ->
+                listOf(
+                    event.startMs - fromMs,
+                    event.type,
+                    event.sensors.joinToString("+"),
+                    event.durationMs,
+                    event.peakValue
+                )
+            }
+        )
+    }
+
+    private fun compactWindow(window: FsrWindowResult): Map<String, Any?> {
+        return mapOf(
+            "t0" to window.fromMs,
+            "to" to window.toMs,
+            "mode" to window.mode,
+            "cols" to window.cols,
+            "data" to window.rows
+        )
+    }
+
     private fun findSensor(snapshot: FsrMcpSnapshot, arguments: JsonObject): FsrMcpSensor? {
         val sensorName = arguments.get("name")?.asStringOrNull()
         val pin = arguments.get("pin")?.asIntOrNull()
@@ -409,7 +553,7 @@ class FsrMcpServer(
             ),
             mapOf(
                 "name" to "fsr_get_history",
-                "description" to "紧凑读取最近 2 分钟历史缓存；默认返回压缩段 data=[from,to,v]，mode=raw 时返回原始点 data=[t,v]。",
+                "description" to "紧凑读取 App 短期历史缓存；默认返回压缩段 data=[from,to,v]，mode=raw 时返回原始点 data=[t,v]。",
                 "inputSchema" to mapOf(
                     "type" to "object",
                     "properties" to mapOf(
@@ -417,11 +561,66 @@ class FsrMcpServer(
                         "names" to mapOf("type" to "array", "items" to mapOf("type" to "string")),
                         "fromMs" to mapOf("type" to "integer", "description" to "起始时间戳，毫秒"),
                         "toMs" to mapOf("type" to "integer", "description" to "结束时间戳，毫秒，默认当前时间"),
-                        "lastMs" to mapOf("type" to "integer", "description" to "最近多少毫秒，默认 120000"),
-                        "intervalMs" to mapOf("type" to "integer", "description" to "返回点的抽样间隔，默认 500"),
+                        "lastMs" to mapOf("type" to "integer", "description" to "最近多少毫秒，默认跟随 App 设置里的短期历史"),
+                        "intervalMs" to mapOf("type" to "integer", "description" to "返回点的抽样间隔，默认跟随 App 设置里的保存频率"),
                         "compressionTolerance" to mapOf("type" to "integer", "description" to "压缩稳定段的数值容差，默认 15"),
                         "mode" to mapOf("type" to "string", "description" to "默认 segments；传 raw 返回原始点"),
                         "includeRaw" to mapOf("type" to "boolean", "description" to "true 等同于 mode=raw")
+                    )
+                ),
+                "annotations" to readOnly
+            ),
+            mapOf(
+                "name" to "fsr_list_sessions",
+                "description" to "读取手机本地数据库里的最近触摸会话摘要，适合白天询问昨晚发生过什么。",
+                "inputSchema" to mapOf(
+                    "type" to "object",
+                    "properties" to mapOf(
+                        "limit" to mapOf("type" to "integer", "description" to "最多返回多少条，默认 12"),
+                        "sinceMs" to mapOf("type" to "integer", "description" to "只看这个时间戳之后的会话")
+                    )
+                ),
+                "annotations" to readOnly
+            ),
+            mapOf(
+                "name" to "fsr_get_session_summary",
+                "description" to "读取单个会话的摘要和少量事件列表；不传 id 默认读取最近会话。",
+                "inputSchema" to mapOf(
+                    "type" to "object",
+                    "properties" to mapOf(
+                        "id" to mapOf("type" to "string", "description" to "fsr_list_sessions 返回的会话 id"),
+                        "limit" to mapOf("type" to "integer", "description" to "最多带回多少条事件，默认 40")
+                    )
+                ),
+                "annotations" to readOnly
+            ),
+            mapOf(
+                "name" to "fsr_get_events",
+                "description" to "按时间窗口读取已分类的触摸事件，返回列为 dt/type/s/durMs/peak。",
+                "inputSchema" to mapOf(
+                    "type" to "object",
+                    "properties" to mapOf(
+                        "fromMs" to mapOf("type" to "integer", "description" to "开始时间戳，毫秒"),
+                        "toMs" to mapOf("type" to "integer", "description" to "结束时间戳，毫秒"),
+                        "lastMs" to mapOf("type" to "integer", "description" to "最近多少毫秒，默认 8 小时"),
+                        "name" to mapOf("type" to "string", "description" to "只看某个传感器名称"),
+                        "type" to mapOf("type" to "string", "description" to "只看某类事件，如 抱住不放/捏/抚摸/戳/按"),
+                        "sessionId" to mapOf("type" to "string", "description" to "只看某个会话"),
+                        "limit" to mapOf("type" to "integer", "description" to "最多返回多少条，默认 80")
+                    )
+                ),
+                "annotations" to readOnly
+            ),
+            mapOf(
+                "name" to "fsr_get_window",
+                "description" to "读取长期数据库里的分钟级摘要窗口，适合低 token 查看整晚趋势。",
+                "inputSchema" to mapOf(
+                    "type" to "object",
+                    "properties" to mapOf(
+                        "fromMs" to mapOf("type" to "integer", "description" to "开始时间戳，毫秒"),
+                        "toMs" to mapOf("type" to "integer", "description" to "结束时间戳，毫秒"),
+                        "lastMs" to mapOf("type" to "integer", "description" to "最近多少毫秒，默认 8 小时"),
+                        "limit" to mapOf("type" to "integer", "description" to "最多返回多少个分钟点，默认 480")
                     )
                 ),
                 "annotations" to readOnly

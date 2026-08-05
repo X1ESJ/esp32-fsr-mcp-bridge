@@ -6,13 +6,15 @@ All rights reserved.
 
 Licensed under BSD 2-Clause License.
 
-当前版本：`V2.3.25`
+当前版本：`V2.4.25`
 
 作者：琳云 XESJ
 
 邮箱：xianeshijie@outlook.com
 
-本项目通过 WiFi 接收 ESP32-S3 支持 ADC 的 GPIO 端口数据，在 Android App 私有数据区滚动缓存最近 2 分钟，并通过手机本地 MCP 服务让第三方 AI 聊天应用读取这些传感器数据。
+本项目通过 WiFi 接收 ESP32-S3 支持 ADC 的 GPIO 端口数据，在 Android App 私有数据区持续保存 FSR402 压力传感器记录，并通过手机本地 MCP 服务让第三方 AI 聊天应用读取实时值、短期历史、触摸事件和会话摘要。
+
+App 默认保留 `60 秒` 短期历史用于实时 MCP 查询，同时把所有采样追加写入手机本地 SQLite 数据库。可选 Supabase 云同步由 App 直接通过 PostgREST 上传分钟聚合和会话摘要，MCP 不参与上传链路。
 
 灵感来源：群友想要制作“共感娃娃”，本人提供 WiFi 和 BLE 连接思路，最后借助 AI 写出本项目。
 
@@ -23,7 +25,7 @@ Licensed under BSD 2-Clause License.
 - [3. 硬件接线指南](#3-硬件接线指南)
 - [4. ESP32 固件](#4-esp32-固件)
 - [5. Android App](#5-android-app)
-- [6. MCP 服务和 Tools](#6-mcp-服务和-tools)
+- [6. MCP 服务和工具](#6-mcp-服务和工具)
 - [7. HTTP API](#7-http-api)
 - [8. 构建和发布](#8-构建和发布)
 - [9. 常见故障与解决方案](#9-常见故障与解决方案)
@@ -64,7 +66,23 @@ Licensed under BSD 2-Clause License.
 
 1. 在 App 主界面复制 MCP 地址，格式通常为 `http://手机局域网IP:9333/mcp`。
 2. 在支持 HTTP MCP 的第三方 AI 聊天应用中添加该地址。
-3. 让 AI 调用 `fsr_get_snapshot`、`fsr_get_changes` 或 `fsr_get_history` 获取传感器数据。
+3. 让 AI 调用 `fsr_get_snapshot`、`fsr_get_changes` 或 `fsr_get_history` 读取实时和短期数据。
+4. 如果要问“昨晚有没有被抱着睡”，优先调用 `fsr_list_sessions`、`fsr_get_session_summary` 或 `fsr_get_events`，不要直接拉整晚原始点。
+
+### 1.5 设置和导出
+
+1. 点击主界面右上角设置按钮。
+2. 在“采样与短期历史”里设置短期历史保存时间，默认 `60 秒`。
+3. 在“保存频率”里设置采样保存间隔，默认 `1 秒`。
+4. 在“本地数据库”里点击“导出 JSON”，导出不会清空旧记录，也不会中断新记录写入。
+
+### 1.6 Supabase 云同步
+
+1. 在 Supabase 创建 `fsr_sessions` 和 `fsr_minute_data` 两张表，参考本文后面的建表 SQL。
+2. 在 App 设置页填写 Supabase 项目地址和 `anon key`。
+3. 打开“Supabase 云同步”开关。
+4. App 每分钟把分钟聚合和会话摘要直接上传到 Supabase。
+5. 第三方 AI 如果要查云端长期摘要，可以单独添加 Supabase 官方 MCP，让它查询 `fsr_sessions` 表。
 
 如果 ESP32 已经连上 WiFi，但手机无法通过 WiFi 访问设备，App 会提示 ESP32 当前连接的 WiFi 名称。此时通常是手机自动切到了其他 WiFi 或移动网络，需要把手机切回同一局域网。
 
@@ -74,9 +92,11 @@ Licensed under BSD 2-Clause License.
 FSR402 薄膜压力传感器
     -> ESP32-S3 ADC GPIO 1-10
     -> ESP32 HTTP API / mDNS / BLE 错误回传
-    -> Android App 私有数据区滚动缓存最近 2 分钟
+    -> Android App 私有 SQLite 数据库持续记录
+    -> App 本地规则生成触摸事件和会话摘要
+    -> 可选 Supabase PostgREST 上传分钟聚合
     -> 手机本地 MCP Server
-    -> 第三方 AI 聊天应用调用 MCP tools
+    -> 第三方 AI 聊天应用调用 MCP 工具查询摘要或实时值
 ```
 
 这个项目的重点不是普通“遥控开关”，而是把多个传感器的实时模拟值变成 AI 应用可查询、可分析、可持续观察的数据源。
@@ -198,7 +218,9 @@ WiFi 连接行为：
 - Kotlin Coroutines
 - StateFlow
 - DataStore
+- SQLite
 - Android NsdManager
+- Supabase PostgREST，可选
 - Foreground Service
 
 系统建议：
@@ -225,10 +247,12 @@ WiFi 连接行为：
 
 性能参数：
 
-- ESP32 传感器采集由 App 轮询触发，当前 App 固定每 `0.5s` 读取一次。
-- 2 分钟缓存最多约 `240` 帧；10 个传感器同时启用时最多约 `2400` 个原始点。
+- ESP32 传感器采集由 App 轮询触发，默认每 `1s` 读取一次。
+- App 设置页可选择 `0.25s`、`0.5s`、`1s`、`1.5s` 或自定义保存频率。
+- 短期历史默认保留 `60s`，可选择 `15s`、`30s`、`45s`、`60s` 或自定义。
+- 所有采样会追加写入手机本地 SQLite 数据库，不覆盖、不因导出而中断。
+- 长时间 AI 查询优先读取事件、会话和分钟摘要，避免把整晚原始点直接塞进上下文。
 - MCP 默认只建议 1 个 AI 客户端连接；多个客户端同时高频调用会排队，手机性能较弱时可能变慢。
-- 当前版本还没有 App 内采样周期调节界面；如果需要 `0.2s-2s` 可调，后续会放进设置页。
 
 自动发现和降级逻辑：
 
@@ -242,9 +266,72 @@ WiFi 连接行为：
 - 主界面：设备状态、ESP32 报错、MCP 状态、本机 MCP 地址、传感器概览。
 - 配网页面：BLE 扫描、WiFi 选择、密码输入、配网进度、完成提示。
 - 传感器配置页：添加 GPIO `1-10` 的模拟输入，并为每个传感器命名。
-- MCP 工具详情页：展示每个 MCP tool 的名称、功能、传入值和返回值。
+- 设置页：调整短期历史、保存频率、触发阈值、导出本地 JSON、配置 Supabase 云同步。
+- MCP 工具详情页：展示每个 MCP 工具的名称、功能、传入值和返回值。
 
-## 6. MCP 服务和 Tools
+### 5.1 Supabase 建表 SQL
+
+如果只在本地使用，可以不配置 Supabase。需要云端长期摘要时，在 Supabase SQL Editor 执行下面的建表语句，然后把项目地址和 `anon key` 填进 App 设置页。
+
+```sql
+create table if not exists public.fsr_sessions (
+  id text primary key,
+  start_ms bigint not null,
+  end_ms bigint not null,
+  duration_ms bigint not null,
+  avg_pressure real not null,
+  max_pressure integer not null,
+  hug_count integer not null,
+  poke_count integer not null,
+  pinch_count integer not null,
+  stroke_count integer not null,
+  press_count integer not null,
+  summary text not null,
+  updated_at_ms bigint not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.fsr_minute_data (
+  id text primary key,
+  session_id text not null,
+  minute_start_ms bigint not null,
+  device_mac text,
+  device_name text,
+  samples integer not null,
+  sensor_values jsonb not null,
+  summary text not null,
+  created_at timestamptz not null default now()
+);
+```
+
+个人实验最简权限：
+
+```sql
+alter table public.fsr_sessions enable row level security;
+alter table public.fsr_minute_data enable row level security;
+
+create policy "fsr_sessions_anon_read" on public.fsr_sessions
+for select to anon using (true);
+
+create policy "fsr_sessions_anon_insert" on public.fsr_sessions
+for insert to anon with check (true);
+
+create policy "fsr_sessions_anon_update" on public.fsr_sessions
+for update to anon using (true) with check (true);
+
+create policy "fsr_minute_anon_read" on public.fsr_minute_data
+for select to anon using (true);
+
+create policy "fsr_minute_anon_insert" on public.fsr_minute_data
+for insert to anon with check (true);
+
+create policy "fsr_minute_anon_update" on public.fsr_minute_data
+for update to anon using (true) with check (true);
+```
+
+说明：上面的策略适合个人局域网/实验环境。公开项目请改成更严格的鉴权方式，不要把可写 anon key 暴露给不可信用户。
+
+## 6. MCP 服务和工具
 
 默认 MCP 地址：
 
@@ -393,15 +480,15 @@ Cursor 示例，可放到项目级 `.cursor/mcp.json` 或客户端设置里的 M
 
 ### 6.5 `fsr_get_history`
 
-功能：紧凑获取最近 2 分钟 App 私有数据区历史缓存。默认返回压缩段，需要原始点时传 `mode=raw` 或 `includeRaw=true`。
+功能：紧凑获取 App 私有数据区的短期历史缓存。默认返回压缩段，需要原始点时传 `mode=raw` 或 `includeRaw=true`。
 
 传入值：
 
 ```json
 {
   "names": ["左耳"],
-  "lastMs": 120000,
-  "intervalMs": 500,
+  "lastMs": 60000,
+  "intervalMs": 1000,
   "compressionTolerance": 15,
   "mode": "segments"
 }
@@ -432,27 +519,151 @@ Cursor 示例，可放到项目级 `.cursor/mcp.json` 或客户端设置里的 M
   "mode": "raw",
   "cols": ["t", "v"],
   "series": [
-    {"s": "左耳", "data": [[0, 941], [500, 950]]}
+    {"s": "左耳", "data": [[0, 941], [1000, 950]]}
   ]
 }
 ```
 
 规则：
 
-- App 固定每 `0.5s` 采集一次，2 分钟最多约 `240` 帧。
-- 10 个传感器同时启用时，最多约 `2400` 个原始点。
+- 默认短期历史为 `60s`，默认保存频率为 `1s`。
+- 短期历史和保存频率都可以在 App 设置页修改。
 - 默认压缩容差为 `±15` 个 ADC 值。
 - `segments` 模式会把连续相邻、且相对区间起点和上一点都没有超过容差的采样合并为 `[from,to,v]` 区间记录。
 - 当前压缩逻辑没有硬性要求连续 `20` 帧才合并，这样可以保留短时间触摸动作的细节。
 - 如果需要原始点，请传 `mode=raw`；如果只看趋势，默认 `segments` 最省 token。
-- 实时传感器历史只保存在 Android App 私有数据区的滚动缓存里；ESP32 Flash 只保存 WiFi 和传感器配置。
+- ESP32 Flash 只保存 WiFi 和传感器配置，不保存实时传感器历史。
 
 AI Prompt 示例：
 
 ```text
-请调用 fsr_get_history，读取“左耳”和“身体”最近 2 分钟数据，
+请调用 fsr_get_history，读取“左耳”和“身体”最近 60 秒数据，
 判断是否出现持续按压、短促点击或逐渐加重的压力变化。
 ```
+
+### 6.6 `fsr_list_sessions`
+
+功能：读取手机本地数据库里的最近触摸会话摘要，适合白天询问昨晚发生了什么。
+
+传入值：
+
+```json
+{
+  "limit": 12,
+  "sinceMs": 1785900000000
+}
+```
+
+返回示例：
+
+```json
+{
+  "cols": ["id", "from", "to", "durS", "max", "summary"],
+  "data": [
+    ["s-1785924000000-a1b2c3d4", 1785924000000, 1785952800000, 28800, 2310, "持续 28800.00 秒，当前接触：身体；峰值 2310；抱住 1 次，捏 0 次，抚摸 0 次，戳 0 次，按 2 次"]
+  ]
+}
+```
+
+### 6.7 `fsr_get_session_summary`
+
+功能：读取单个会话的摘要和少量事件。不传 `id` 时默认读取最近会话。
+
+传入值：
+
+```json
+{
+  "id": "s-1785924000000-a1b2c3d4",
+  "limit": 40
+}
+```
+
+返回示例：
+
+```json
+{
+  "id": "s-1785924000000-a1b2c3d4",
+  "from": 1785924000000,
+  "to": 1785952800000,
+  "durS": 28800,
+  "avg": 860,
+  "max": 2310,
+  "counts": {"抱住不放": 1, "捏": 0, "抚摸": 0, "戳": 0, "按": 2},
+  "summary": "持续 28800.00 秒，当前接触：身体；峰值 2310；抱住 1 次，捏 0 次，抚摸 0 次，戳 0 次，按 2 次",
+  "eventCols": ["dt", "type", "s", "durMs", "peak"],
+  "events": [[0, "抱住不放", "身体", 5740, 2310]]
+}
+```
+
+### 6.8 `fsr_get_events`
+
+功能：按时间窗口读取 App 本地已经分类好的触摸事件。
+
+事件规则：
+
+- 某个通道连续 `20` 次安静后才参与事件判断，避免接线坏的通道乱报。
+- 默认触发阈值为 `300`，可在 App 设置页修改。
+- 短于 `0.4s` 判为“戳”。
+- 超过 `2.5s` 判为“抱住不放”。
+- 两个或更多传感器同时触发判为“捏”。
+- 短时间内连续扫过 3 个或更多传感器判为“抚摸”。
+- 其他情况判为“按”。
+
+传入值：
+
+```json
+{
+  "lastMs": 28800000,
+  "type": "抱住不放",
+  "limit": 80
+}
+```
+
+返回示例：
+
+```json
+{
+  "t0": 1785924000000,
+  "cols": ["dt", "type", "s", "durMs", "peak"],
+  "data": [[0, "抱住不放", "身体", 5740, 2310]]
+}
+```
+
+### 6.9 `fsr_get_window`
+
+功能：读取长期数据库里的分钟级摘要窗口，适合低 token 查看整晚趋势。
+
+传入值：
+
+```json
+{
+  "lastMs": 28800000,
+  "limit": 480
+}
+```
+
+返回示例：
+
+```json
+{
+  "t0": 1785924000000,
+  "to": 1785952800000,
+  "mode": "minute",
+  "cols": ["dt", "summary", "n"],
+  "data": [[0, "本分钟 60 次采样，最高 身体=2310", 60]]
+}
+```
+
+### 6.10 建议 AI 查询方式
+
+低 token 默认顺序：
+
+1. 先调用 `fsr_list_sensors` 确认名称。
+2. 问“现在怎样”时调用 `fsr_get_snapshot` 或 `fsr_get_changes`。
+3. 问“最近一分钟”时调用 `fsr_get_history`。
+4. 问“昨晚/长时间”时调用 `fsr_list_sessions`。
+5. 需要细节时再调用 `fsr_get_session_summary` 或 `fsr_get_events`。
+6. 需要趋势时调用 `fsr_get_window`，不要直接读取整晚原始采样。
 
 ## 7. HTTP API
 
@@ -553,7 +764,7 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware\Esp32_wifi_connect
 
 - 确认 App 主界面 MCP 服务开关处于开启状态。
 - 确认 App 常驻通知没有被系统关闭。
-- 确认最近 2 分钟内有采集数据；App 会从私有数据区恢复未过期缓存，超过 2 分钟会自动丢弃。
+- 确认设置页里的短期历史窗口内有采集数据；长期数据请改用 `fsr_list_sessions` 或 `fsr_get_events` 查询。
 - 如果系统杀后台服务，请给 App 允许后台运行、自启动和通知。
 
 ### 9.4 ADC 数值跳变严重
@@ -584,13 +795,14 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware\Esp32_wifi_connect
 1. 在左耳、右耳、身体、前肢等位置放置 FSR402。
 2. 在 App 中把 GPIO 命名为“左耳”“右耳”“身体”等自然语言名称。
 3. AI 客户端调用 `fsr_get_changes` 观察最新触摸变化。
-4. AI 客户端调用 `fsr_get_history` 分析最近 2 分钟压力趋势。
-5. 聊天应用根据传感器数据判断“短按”“持续按压”“轻抚”“突然用力”等动作。
+4. AI 客户端调用 `fsr_get_history` 分析最近短期压力趋势。
+5. AI 客户端调用 `fsr_list_sessions` 或 `fsr_get_events` 分析整晚事件。
+6. 聊天应用根据事件摘要判断“短按”“持续按压”“轻抚”“突然用力”等动作。
 
 多传感器 AI Prompt 示例：
 
 ```text
-请读取“左耳”“右耳”“身体”最近 2 分钟的 FSR 历史，
+请读取“左耳”“右耳”“身体”最近 60 秒的 FSR 历史，
 判断有没有明显的持续按压、快速点击或左右两侧交替触摸。
 回答时给出你依据的传感器名称、时间段和压力变化。
 ```
@@ -610,17 +822,24 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware\Esp32_wifi_connect
 - 当前只适配 FSR402 薄膜压力传感器这类模拟传感器。
 - App 不内置离线 AI，需要外部 MCP 客户端调用。
 - MCP 服务是轻量本地 HTTP 实现，不适合公网或多客户端高并发。
+- `0.01s` 这种显示精度来自毫秒时间戳格式化；如果保存频率设为 `1s`，事件边沿精度不能当成真实百分之一秒级测量。
 
 后续方向：
 
 - 增加 App 截图、硬件接线图和 AI 客户端配置截图。
 - 增加蓝牙直连 MCP 或离线降级方案。
 - 增加自定义 ADC 滤波策略。
-- 增加 App 内采样周期调节，范围计划为 `0.2s-2s`。
 - 支持多 ESP32 设备同时接入。
-- 支持更长时间的本地历史持久化。
 
 ## 13. 更新日志 Changelog
+
+### V2.4.25
+
+- 新增设置页，可调整短期历史窗口、保存频率和触发阈值。
+- 新增手机本地 SQLite 数据库，采样数据持续追加保存，并支持 JSON 导出。
+- 新增触摸事件和会话摘要：戳、按、抱住不放、捏、抚摸。
+- 新增长期 MCP 查询工具：`fsr_list_sessions`、`fsr_get_session_summary`、`fsr_get_events`、`fsr_get_window`。
+- 新增 Supabase 云同步配置，App 每分钟通过 PostgREST 直接上传分钟聚合和会话摘要。
 
 ### V2.3.25
 
