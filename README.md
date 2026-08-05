@@ -883,7 +883,6 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware\Esp32_wifi_connect
 本项目由 姚 大人赞助的资金推动创建，不会向任何人收取除此之外的任何费用 ^_^
 <img width="408" height="390" alt="image" src="https://github.com/user-attachments/assets/8507b82e-db38-46d1-95bd-29763fc75de8" />
 
-
 作者：琳云 XESJ
 
 邮箱：xianeshijie@outlook.com
