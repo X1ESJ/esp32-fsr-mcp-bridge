@@ -3,9 +3,12 @@
 build/
 */build/
 local.properties
+.env
+.env.*
 *.apk
 *.aab
 *.apks
+*.log
 
 # IDE
 .idea/
