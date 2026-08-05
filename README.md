@@ -651,3 +651,9 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware\Esp32_wifi_connect
 该协议允许他人使用、修改、再发布源码或二进制版本，但再发布时必须保留开发者版权声明、协议条款和免责声明。
 
 衍生修改版再分发时，建议在文档中说明主要改动，避免用户把修改版问题误认为原项目问题。
+
+## 15.费用
+
+本项目由 姚 大人赞助的资金推动创建，不会向任何人收取除此之外的任何费用 ^_^
+<img width="408" height="390" alt="image" src="https://github.com/user-attachments/assets/8507b82e-db38-46d1-95bd-29763fc75de8" />
+
