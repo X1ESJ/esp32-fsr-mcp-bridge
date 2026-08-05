@@ -1,3 +1,27 @@
+/*
+  ESP32 FSR MCP Bridge Firmware
+
+  Hardware:
+  - Board: ESP32-S3, tested with ESP32-S3-N16R8 style boards.
+  - Sensors: FSR402 pressure sensors on GPIO1-GPIO10.
+  - Reset button: GPIO11 to GND, hold for 5 seconds to clear WiFi and sensor config.
+  - GPIO12: reserved idle pin; firmware drives it LOW as an auxiliary ground helper.
+  - Other safe non-ADC pins are also driven LOW as optional auxiliary ground pins.
+
+  Network:
+  - BLE provisioning service UUID: 0000FFFF-0000-1000-8000-00805F9B34FB.
+  - HTTP API runs on port 80 after WiFi connects.
+  - mDNS name: esp32.local.
+
+  Serial debug:
+  - Baud rate: 115200.
+  - Logs show BLE, WiFi retry/failure, HTTP startup, mDNS and ADC configuration events.
+
+  Version: V2.3.23
+  License: BSD 2-Clause License
+  Copyright (c) 2026 LINYUN XESJ
+*/
+
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
@@ -26,13 +50,13 @@ static const char* SERVICE_UUID = "0000FFFF-0000-1000-8000-00805F9B34FB";
 static const char* APP_TO_ESP_UUID = "0000FF01-0000-1000-8000-00805F9B34FB";
 static const char* ESP_TO_APP_UUID = "0000FF02-0000-1000-8000-00805F9B34FB";
 
-// 按用户实际排针表开放。GPIO0/6/45/46 会保守限制能力，避免启动/重置冲突。
+// 按用户实际排针表开放。GPIO0/45/46 不作为传感器输入，避免启动相关风险。
 static const int MANAGED_PINS[] = {
   1, 2, 3, 4, 5, 6, 7, 8, 9, 10
 };
 static const int MANAGED_PIN_COUNT = sizeof(MANAGED_PINS) / sizeof(MANAGED_PINS[0]);
 static const int AUX_GROUND_PINS[] = {
-  0, 13, 14, 15, 16, 17, 18, 20, 21, 35, 36, 37, 38, 39, 40, 41, 42, 45, 46, 47, 48
+  0, 12, 13, 14, 15, 16, 17, 18, 20, 21, 35, 36, 37, 38, 39, 40, 41, 42, 45, 46, 47, 48
 };
 static const int AUX_GROUND_PIN_COUNT = sizeof(AUX_GROUND_PINS) / sizeof(AUX_GROUND_PINS[0]);
 
@@ -196,11 +220,10 @@ String analogOutputKind(int pin) {
 }
 
 String noteForPin(int pin) {
-  return "FSR402 analog input, 12-bit range 0-4095.";
-  if (pin == 0 || pin == 45 || pin == 46) return "启动相关安全引脚，本固件仅允许输入。";
-  if (pin == RESET_BUTTON_PIN) return "GPIO6 是长按重置按钮，本固件仅允许输入。";
-  if (pin >= 11 && pin <= 18) return "ADC2 引脚在 WiFi 工作时可能不如 ADC1 稳定。";
-  return "ESP32-S3 没有 DAC，模拟输出使用 LEDC/PWM。";
+  if (pin >= 1 && pin <= 10) return "FSR402 analog input, 12-bit range 0-4095.";
+  if (pin == RESET_BUTTON_PIN) return "GPIO11 reset button, hold for 5 seconds to clear provisioning.";
+  if (pin == 12) return "Reserved idle pin, driven LOW as auxiliary ground helper.";
+  return "Not exposed as a sensor pin in this firmware.";
 }
 
 int clampAnalogValue(int value) {
@@ -1220,9 +1243,12 @@ void startWebServer() {
   server.on("/pins", handlePinsRequest);
   server.on("/snapshot", handleSnapshotRequest);
   server.on("/fsr/changes", handleFsrChangesRequest);
-  server.on("/pin/config", handlePinConfigRequest);
+  server.on("/pin/config", HTTP_POST, handlePinConfigRequest);
+  // Keep GET compatibility for APKs released before the write API moved to POST.
+  server.on("/pin/config", HTTP_GET, handlePinConfigRequest);
   server.on("/pin/value", handlePinValueRequest);
-  server.on("/pin/delete", handlePinDeleteRequest);
+  server.on("/pin/delete", HTTP_POST, handlePinDeleteRequest);
+  server.on("/pin/delete", HTTP_GET, handlePinDeleteRequest);
   server.on("/config/delete", handleConfigDeleteRequest);
   server.on("/config/order", handleConfigOrderRequest);
   server.on("/combo/config", handleComboConfigRequest);

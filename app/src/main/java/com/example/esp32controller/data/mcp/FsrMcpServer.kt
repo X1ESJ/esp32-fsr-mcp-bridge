@@ -259,7 +259,7 @@ class FsrMcpServer(
                 arguments.get("toMs")?.asLongOrNull(),
                 arguments.get("lastMs")?.asLongOrNull(),
                 arguments.get("intervalMs")?.asIntOrNull(),
-                arguments.get("compressionTolerance")?.asIntOrNull()?.coerceAtLeast(0) ?: 4
+                arguments.get("compressionTolerance")?.asIntOrNull()?.coerceAtLeast(0) ?: 15
             )
             else -> return rpcError(id, -32602, "Unknown tool")
         }
@@ -347,7 +347,7 @@ class FsrMcpServer(
                         "toMs" to mapOf("type" to "integer", "description" to "结束时间戳，毫秒，默认当前时间"),
                         "lastMs" to mapOf("type" to "integer", "description" to "最近多少毫秒，默认 60000"),
                         "intervalMs" to mapOf("type" to "integer", "description" to "返回点的抽样间隔，默认 500"),
-                        "compressionTolerance" to mapOf("type" to "integer", "description" to "压缩稳定段的数值容差，默认 4")
+                        "compressionTolerance" to mapOf("type" to "integer", "description" to "压缩稳定段的数值容差，默认 15")
                     )
                 ),
                 "annotations" to readOnly

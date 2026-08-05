@@ -27,7 +27,7 @@ import kotlin.math.roundToInt
 private const val HISTORY_WINDOW_MS = 60_000L
 private const val DEFAULT_SAMPLING_INTERVAL_MS = 500
 private const val DEFAULT_CHANGE_DELTA = 8
-private const val DEFAULT_COMPRESSION_TOLERANCE = 4
+private const val DEFAULT_COMPRESSION_TOLERANCE = 15
 private const val MAX_CHANGE_EVENTS = 2400
 
 data class FsrBridgeState(

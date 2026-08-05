@@ -6,8 +6,10 @@ import okhttp3.OkHttpClient
 import okhttp3.ResponseBody
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import retrofit2.http.Field
+import retrofit2.http.FormUrlEncoded
 import retrofit2.http.GET
-import retrofit2.http.Query
+import retrofit2.http.POST
 import java.util.concurrent.TimeUnit
 
 data class DeviceStatusResponse(
@@ -38,18 +40,20 @@ interface Esp32ApiService {
     @GET("fsr/changes")
     suspend fun getFsrChanges(): DeviceSnapshotResponse
 
-    @GET("pin/config")
+    @FormUrlEncoded
+    @POST("pin/config")
     suspend fun configurePin(
-        @Query("pin") pin: Int,
-        @Query("direction") direction: String,
-        @Query("mode") mode: String,
-        @Query("value") value: Int,
-        @Query("label") label: String?
+        @Field("pin") pin: Int,
+        @Field("direction") direction: String,
+        @Field("mode") mode: String,
+        @Field("value") value: Int,
+        @Field("label") label: String?
     ): PinOperationResponse
 
-    @GET("pin/delete")
+    @FormUrlEncoded
+    @POST("pin/delete")
     suspend fun deletePinConfig(
-        @Query("pin") pin: Int
+        @Field("pin") pin: Int
     ): PinOperationResponse
 }
 

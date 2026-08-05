@@ -1112,7 +1112,7 @@ private val mcpToolDocs = listOf(
         name = "fsr_get_history",
         purpose = "读取最近 60 秒的本地历史缓存。",
         setting = "适合分析一段时间内的触摸强弱、持续时间和变化趋势。",
-        inputs = listOf("name/names：筛选传感器", "lastMs：最近多少毫秒，默认 60000", "fromMs/toMs：时间戳范围", "intervalMs：抽样间隔，默认 500", "compressionTolerance：稳定段压缩容差，默认 4"),
+        inputs = listOf("name/names：筛选传感器", "lastMs：最近多少毫秒，默认 60000", "fromMs/toMs：时间戳范围", "intervalMs：抽样间隔，默认 500", "compressionTolerance：稳定段压缩容差，默认 15"),
         returns = listOf("series：每个传感器一组历史数据", "data：抽样点", "compressed：压缩后的稳定段，含 fromMs、toMs、minValue、maxValue、samples")
     )
 )

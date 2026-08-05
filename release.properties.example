@@ -1,9 +1,23 @@
-# Copy this file to local-signing/release.properties or provide the same values
-# through environment variables when building a signed release APK.
+# Release APK signing example.
 #
-# Do not commit real signing passwords or keystore files.
+# Usage:
+# 1. Create the local-signing/ directory in the project root.
+# 2. Copy this file to local-signing/release.properties.
+# 3. Replace every change-me value with your real local signing value.
+#
+# Safety:
+# - Never commit local-signing/release.properties.
+# - Never commit .jks, .keystore, .p12 or real signing passwords.
+# - CI can provide the same names through environment variables instead.
 
+# Relative or absolute path to the Android release keystore file.
 RELEASE_STORE_FILE=local-signing/esp32-controller-release.jks
+
+# Password used to open the keystore file.
 RELEASE_STORE_PASSWORD=change-me
+
+# Key alias inside the keystore.
 RELEASE_KEY_ALIAS=esp32-controller
+
+# Password for the selected key alias.
 RELEASE_KEY_PASSWORD=change-me

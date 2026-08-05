@@ -3,17 +3,24 @@
 build/
 */build/
 local.properties
+*.apk
+*.aab
+*.apks
 
 # IDE
 .idea/
+.vscode/
 *.iml
 .DS_Store
+Thumbs.db
 
 # Local release signing. Never publish signing keys.
 local-signing/
 *.jks
 *.keystore
 *.p12
+*.pem
+release.properties
 
 # Generated artifacts
 outputs/
