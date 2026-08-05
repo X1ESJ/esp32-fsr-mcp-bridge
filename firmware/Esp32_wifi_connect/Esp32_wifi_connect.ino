@@ -17,7 +17,7 @@
   - Baud rate: 115200.
   - Logs show BLE, WiFi retry/failure, HTTP startup, mDNS and ADC configuration events.
 
-  Version: V2.4.25
+  Version: V2.5.0
   License: BSD 2-Clause License
   Copyright (c) 2026 LINYUN XESJ
 */

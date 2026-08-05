@@ -4,17 +4,22 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,6 +27,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,6 +36,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -80,8 +87,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.composed
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -90,11 +99,13 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.esp32controller.BuildConfig
 import com.example.esp32controller.model.BleScanDevice
 import com.example.esp32controller.model.DeviceUiModel
@@ -161,6 +172,114 @@ private val CardBorder: Color
     @Composable get() = if (isSystemInDarkTheme()) Color(0xFF25364C) else Color.White.copy(alpha = 0.72f)
 private val StepInactive: Color
     @Composable get() = if (isSystemInDarkTheme()) Color(0xFF2C3B50) else Color(0xFFD8E0EA)
+
+private data class PairingStepMeta(
+    val label: String,
+    val subtitle: String
+)
+
+private val pairingSteps = listOf(
+    PairingStepMeta(label = "扫描", subtitle = "找到正在广播的 ESP32"),
+    PairingStepMeta(label = "WiFi", subtitle = "选择 2.4G 网络并输入密码"),
+    PairingStepMeta(label = "配网", subtitle = "通过 BLE 发送网络信息"),
+    PairingStepMeta(label = "完成", subtitle = "等待设备回传 IP 并返回主页")
+)
+
+private fun Modifier.springPress(
+    interactionSource: MutableInteractionSource,
+    enabled: Boolean = true,
+    pressedScale: Float = 0.97f
+): Modifier = composed {
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (enabled && pressed) pressedScale else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "spring-press"
+    )
+    graphicsLayer {
+        scaleX = scale
+        scaleY = scale
+    }
+}
+
+@Composable
+private fun BouncyButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    shape: RoundedCornerShape = RoundedCornerShape(18.dp),
+    contentPadding: PaddingValues = ButtonDefaults.ContentPadding,
+    content: @Composable RowScope.() -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    Button(
+        onClick = onClick,
+        modifier = modifier.springPress(interactionSource, enabled = enabled),
+        enabled = enabled,
+        interactionSource = interactionSource,
+        shape = shape,
+        contentPadding = contentPadding,
+        content = content
+    )
+}
+
+@Composable
+private fun BouncyOutlinedButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    shape: RoundedCornerShape = RoundedCornerShape(16.dp),
+    colors: androidx.compose.material3.ButtonColors = ButtonDefaults.outlinedButtonColors(),
+    content: @Composable RowScope.() -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier.springPress(interactionSource, enabled = enabled),
+        enabled = enabled,
+        interactionSource = interactionSource,
+        shape = shape,
+        colors = colors,
+        content = content
+    )
+}
+
+@Composable
+private fun BouncyIconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    IconButton(
+        onClick = onClick,
+        modifier = modifier.springPress(interactionSource, enabled = enabled, pressedScale = 0.92f),
+        enabled = enabled,
+        interactionSource = interactionSource,
+        content = content
+    )
+}
+
+@Composable
+private fun BouncyTextButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable RowScope.() -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    TextButton(
+        onClick = onClick,
+        modifier = modifier.springPress(interactionSource, enabled = enabled, pressedScale = 0.96f),
+        enabled = enabled,
+        interactionSource = interactionSource,
+        content = content
+    )
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -320,7 +439,7 @@ fun MainScreen(
             title = { Text("删除设备") },
             text = { Text("确定删除 ${device.name} 吗？删除后需要重新配对才能恢复。") },
             confirmButton = {
-                TextButton(
+                BouncyTextButton(
                     onClick = {
                         onDeleteDevice(device.macAddress)
                         deleteTarget = null
@@ -330,7 +449,7 @@ fun MainScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { deleteTarget = null }) {
+                BouncyTextButton(onClick = { deleteTarget = null }) {
                     Text("取消")
                 }
             }
@@ -352,13 +471,13 @@ private fun MainTopBar(
             }
         },
         actions = {
-            IconButton(onClick = onOpenSettings) {
+            BouncyIconButton(onClick = onOpenSettings) {
                 Icon(Icons.Default.Settings, contentDescription = "设置")
             }
             Box(
-                modifier = Modifier.padding(end = 34.dp)
+                modifier = Modifier.padding(end = 46.dp)
             ) {
-                Button(
+                BouncyButton(
                     onClick = onOpenPairing,
                     shape = RoundedCornerShape(999.dp),
                     contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp)
@@ -438,7 +557,7 @@ private fun PermissionCard(onRequestPermissions: () -> Unit) {
         Spacer(Modifier.height(8.dp))
         Text("BLE 配网、WiFi 扫描和 mDNS 发现需要系统权限。", color = Muted)
         Spacer(Modifier.height(12.dp))
-        Button(onClick = onRequestPermissions, shape = RoundedCornerShape(14.dp)) {
+        BouncyButton(onClick = onRequestPermissions, shape = RoundedCornerShape(14.dp)) {
             Text("授予权限")
         }
     }
@@ -466,7 +585,7 @@ private fun DeviceListCard(
             if (mdnsScanning) {
                 CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
             } else if (showRetryButton) {
-                OutlinedButton(onClick = onRetryMdns, shape = RoundedCornerShape(999.dp)) {
+                BouncyOutlinedButton(onClick = onRetryMdns, shape = RoundedCornerShape(999.dp)) {
                     Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("重试")
@@ -515,8 +634,10 @@ private fun DeviceRow(
     onClick: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val rowInteraction = remember { MutableInteractionSource() }
     Row(
         modifier = Modifier
+            .springPress(rowInteraction)
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
             .background(if (device.isSelected) SelectedSurface else CardInner)
@@ -525,7 +646,11 @@ private fun DeviceRow(
                 color = if (device.isSelected) ActiveBlue.copy(alpha = 0.35f) else Line,
                 shape = RoundedCornerShape(18.dp)
             )
-            .clickable(onClick = onClick)
+            .clickable(
+                interactionSource = rowInteraction,
+                indication = null,
+                onClick = onClick
+            )
             .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -541,7 +666,7 @@ private fun DeviceRow(
             Text(device.ipAddress, style = MaterialTheme.typography.bodySmall, color = Muted)
             Text(device.macAddress, style = MaterialTheme.typography.bodySmall, color = Muted.copy(alpha = 0.78f))
         }
-        IconButton(onClick = onDelete) {
+        BouncyIconButton(onClick = onDelete) {
             Icon(Icons.Default.Delete, contentDescription = "删除设备", tint = DangerRed)
         }
     }
@@ -639,7 +764,7 @@ private fun McpStatusCard(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            OutlinedButton(
+            BouncyOutlinedButton(
                 onClick = {
                     clipboard.setText(AnnotatedString(mcpState.url))
                     copied = true
@@ -649,7 +774,7 @@ private fun McpStatusCard(
             ) {
                 Text(if (copied) "已复制" else "复制地址")
             }
-            OutlinedButton(
+            BouncyOutlinedButton(
                 onClick = onOpenToolDetails,
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(999.dp)
@@ -688,7 +813,7 @@ private fun SensorOverviewCard(
                     color = Muted
                 )
             }
-            Button(
+            BouncyButton(
                 onClick = onOpenSensorPanel,
                 enabled = selectedDevice != null,
                 shape = RoundedCornerShape(999.dp)
@@ -790,12 +915,12 @@ private fun SensorPanelScreen(
                         }
                     },
                     navigationIcon = {
-                        IconButton(onClick = onClose) {
+                        BouncyIconButton(onClick = onClose) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                         }
                     },
                     actions = {
-                        IconButton(
+                        BouncyIconButton(
                             onClick = { addDialogVisible = true },
                             enabled = selectedDevice != null && uiState.sensorConfigs.size < FSR_SENSOR_PINS.size
                         ) {
@@ -805,8 +930,11 @@ private fun SensorPanelScreen(
                 )
             },
             floatingActionButton = {
+                val fabInteraction = remember { MutableInteractionSource() }
                 FloatingActionButton(
                     onClick = { addDialogVisible = true },
+                    modifier = Modifier.springPress(fabInteraction),
+                    interactionSource = fabInteraction,
                     containerColor = ActiveBlue,
                     contentColor = Color.White
                 ) {
@@ -882,7 +1010,7 @@ private fun EmptyControlPanel(onAdd: () -> Unit) {
             Spacer(Modifier.height(6.dp))
             Text("点击添加，选择 GPIO1-GPIO10。", color = Muted, textAlign = TextAlign.Center)
             Spacer(Modifier.height(14.dp))
-            Button(onClick = onAdd, shape = RoundedCornerShape(999.dp)) {
+            BouncyButton(onClick = onAdd, shape = RoundedCornerShape(999.dp)) {
                 Text("添加传感器")
             }
         }
@@ -906,7 +1034,7 @@ private fun SensorConfigCard(
                 Text(config.displayLabel(), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Ink)
                 Text("GPIO${config.pin} · 模拟输入 · ADC1", style = MaterialTheme.typography.bodySmall, color = Muted)
             }
-            IconButton(onClick = onDelete) {
+            BouncyIconButton(onClick = onDelete) {
                 Icon(Icons.Default.Delete, contentDescription = "删除", tint = DangerRed)
             }
         }
@@ -950,7 +1078,7 @@ private fun SettingsScreen(
                         }
                     },
                     navigationIcon = {
-                        IconButton(onClick = onClose) {
+                        BouncyIconButton(onClick = onClose) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                         }
                     }
@@ -1048,7 +1176,7 @@ private fun SamplingSettingsCard(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 modifier = Modifier.weight(1f)
             )
-            Button(
+            BouncyButton(
                 onClick = {
                     customHistorySeconds.toLongOrNull()?.let { onUpdateHistoryWindow(it * 1000L) }
                 },
@@ -1062,7 +1190,7 @@ private fun SamplingSettingsCard(
         Text("保存频率", fontWeight = FontWeight.SemiBold, color = Ink)
         Spacer(Modifier.height(8.dp))
         ChoiceGrid(
-            options = listOf("0.25 秒" to 250L, "0.5 秒" to 500L, "1 秒" to 1_000L, "1.5 秒" to 1_500L),
+            options = listOf("250ms" to 250L, "500ms" to 500L, "1000ms" to 1_000L, "2000ms" to 2_000L),
             selected = settings.sampleIntervalMs,
             onSelect = onUpdateSampleInterval
         )
@@ -1076,7 +1204,7 @@ private fun SamplingSettingsCard(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 modifier = Modifier.weight(1f)
             )
-            Button(
+            BouncyButton(
                 onClick = {
                     customIntervalMs.toLongOrNull()?.let(onUpdateSampleInterval)
                 },
@@ -1096,7 +1224,7 @@ private fun SamplingSettingsCard(
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             modifier = Modifier.fillMaxWidth()
         )
-        Button(
+        BouncyButton(
             onClick = { thresholdText.toIntOrNull()?.let(onUpdateTriggerThreshold) },
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(999.dp)
@@ -1129,7 +1257,7 @@ private fun LocalDatabaseCard(
         }
         Spacer(Modifier.height(12.dp))
         InfoLine("最近采样", stats.lastSampleAtMs?.let(::formatClockTime) ?: "还没有数据")
-        Button(
+        BouncyButton(
             onClick = onExportDatabase,
             enabled = !exportBusy,
             modifier = Modifier.fillMaxWidth(),
@@ -1216,13 +1344,19 @@ private fun SupabaseSettingsCard(
             )
         }
         Spacer(Modifier.height(12.dp))
-        Button(
+        BouncyButton(
             onClick = { onUpdateSupabaseSettings(currentSettings()) },
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(999.dp)
         ) {
             Text("保存 Supabase 设置")
         }
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "当前 App 直传的是 fsr_sessions 和 fsr_minute_data；如果你还想扩展别的设备数据表，可参考仓库里的 docs/device_data_supabase_example.md。",
+            color = Muted,
+            style = MaterialTheme.typography.bodySmall
+        )
         Spacer(Modifier.height(10.dp))
         val statusText = when {
             !syncState.enabled -> "云同步已关闭"
@@ -1250,7 +1384,7 @@ private fun ChoiceGrid(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 row.forEach { (label, value) ->
                     val active = selected == value
-                    OutlinedButton(
+                    BouncyOutlinedButton(
                         onClick = { onSelect(value) },
                         modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.outlinedButtonColors(
@@ -1344,7 +1478,7 @@ private fun AddSensorDialog(
             }
         },
         confirmButton = {
-            TextButton(
+            BouncyTextButton(
                 onClick = { selectedPin?.let { onSave(it, trimmedLabel) } },
                 enabled = canSave
             ) {
@@ -1352,7 +1486,7 @@ private fun AddSensorDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            BouncyTextButton(onClick = onDismiss) {
                 Text("取消")
             }
         }
@@ -1367,7 +1501,7 @@ private fun PinDropdown(
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        OutlinedButton(
+        BouncyOutlinedButton(
             onClick = { expanded = true },
             enabled = availablePins.isNotEmpty(),
             modifier = Modifier.fillMaxWidth(),
@@ -1401,35 +1535,92 @@ private fun RollingNumberText(
     color: Color,
     modifier: Modifier = Modifier
 ) {
-    AnimatedContent(
-        targetState = value,
-        transitionSpec = {
-            val direction = if (targetState >= initialState) 1 else -1
-            (
-                slideInVertically(
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                        stiffness = Spring.StiffnessLow
-                    )
-                ) { fullHeight -> direction * fullHeight } + fadeIn()
-                ).togetherWith(
-                    slideOutVertically(
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioNoBouncy,
-                            stiffness = Spring.StiffnessMediumLow
+    val targetText = value.toString()
+    var previousText by remember { mutableStateOf(targetText) }
+    var activeText by remember { mutableStateOf(targetText) }
+    val cellWidth = ((style.fontSize.value * 0.68f).coerceAtLeast(12f)).dp
+    val paddedLength = maxOf(previousText.length, activeText.length)
+    val oldText = previousText.padStart(paddedLength, ' ')
+    val newText = activeText.padStart(paddedLength, ' ')
+
+    LaunchedEffect(targetText) {
+        if (targetText != activeText) {
+            previousText = activeText
+            activeText = targetText
+        }
+    }
+
+    Row(modifier = modifier, verticalAlignment = Alignment.Bottom) {
+        newText.forEachIndexed { index, currentChar ->
+            val previousChar = oldText[index]
+            RollingDigit(
+                previousChar = previousChar,
+                currentChar = currentChar,
+                style = style.copy(fontFamily = FontFamily.Monospace),
+                color = color,
+                cellWidth = cellWidth
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalAnimationApi::class)
+@Composable
+private fun RollingDigit(
+    previousChar: Char,
+    currentChar: Char,
+    style: TextStyle,
+    color: Color,
+    cellWidth: androidx.compose.ui.unit.Dp
+) {
+    Box(
+        modifier = Modifier.widthIn(min = cellWidth),
+        contentAlignment = Alignment.Center
+    ) {
+        if (previousChar == currentChar) {
+            Text(
+                text = currentChar.takeIf { it != ' ' }?.toString().orEmpty(),
+                style = style,
+                fontWeight = FontWeight.Black,
+                color = color
+            )
+        } else {
+            AnimatedContent(
+                targetState = currentChar,
+                transitionSpec = {
+                    val direction = when {
+                        targetState.isDigit() && initialState.isDigit() -> {
+                            if (targetState.digitToInt() >= initialState.digitToInt()) 1 else -1
+                        }
+                        targetState == ' ' -> -1
+                        else -> 1
+                    }
+                    (
+                        slideInVertically(
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                stiffness = Spring.StiffnessLow
+                            )
+                        ) { fullHeight -> direction * fullHeight } + fadeIn()
+                        ).togetherWith(
+                            slideOutVertically(
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                    stiffness = Spring.StiffnessMediumLow
+                                )
+                            ) { fullHeight -> -direction * fullHeight } + fadeOut()
                         )
-                    ) { fullHeight -> -direction * fullHeight } + fadeOut()
+                },
+                label = "rolling-digit"
+            ) { char ->
+                Text(
+                    text = char.takeIf { it != ' ' }?.toString().orEmpty(),
+                    style = style,
+                    fontWeight = FontWeight.Black,
+                    color = color
                 )
-        },
-        label = "rolling-number",
-        modifier = modifier
-    ) { number ->
-        Text(
-            text = number.toString(),
-            style = style,
-            fontWeight = FontWeight.Black,
-            color = color
-        )
+            }
+        }
     }
 }
 
@@ -1442,6 +1633,7 @@ private fun DeltaChip(delta: Int) {
     }
     val sign = when {
         delta > 0 -> "+"
+        delta < 0 -> "-"
         else -> ""
     }
     Box(
@@ -1450,7 +1642,21 @@ private fun DeltaChip(delta: Int) {
             .background(color.copy(alpha = 0.12f))
             .padding(horizontal = 9.dp, vertical = 5.dp)
     ) {
-        Text("$sign$delta", color = color, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (delta != 0) {
+                Text(
+                    sign,
+                    color = color,
+                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            RollingNumberText(
+                value = abs(delta),
+                style = MaterialTheme.typography.labelMedium.copy(fontSize = 13.sp),
+                color = color
+            )
+        }
     }
 }
 
@@ -1683,7 +1889,7 @@ private fun DetailBottomBar(
                 .padding(horizontal = 18.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            OutlinedButton(onClick = onToggle, shape = RoundedCornerShape(999.dp)) {
+            BouncyOutlinedButton(onClick = onToggle, shape = RoundedCornerShape(999.dp)) {
                 Text("详情")
             }
             AnimatedVisibility(visible = expanded) {
@@ -1757,29 +1963,52 @@ private fun PairingFlowScreen(
             ) {
                 SegmentedStepHeader(currentStep = uiState.pairingStep)
                 Spacer(Modifier.height(18.dp))
-                when (uiState.pairingStep) {
-                    0 -> ScanStep(
-                        devices = uiState.bleDevices,
-                        selectedDevice = uiState.selectedBleDevice,
-                        busy = uiState.pairingBusy,
-                        message = uiState.pairingMessage,
-                        onSelectBleDevice = onSelectBleDevice,
-                        onNext = onGoToWifiStep
-                    )
-                    1 -> WifiStep(
-                        selectedWifiSsid = uiState.selectedWifiSsid,
-                        currentWifiSsid = uiState.currentWifiSsid,
-                        networks = uiState.availableWifiNetworks,
-                        selectedFrequencyMhz = uiState.selectedWifiFrequencyMhz,
-                        routerPingOk = uiState.routerPingOk,
-                        routerPingInProgress = uiState.routerPingInProgress,
-                        busy = uiState.pairingBusy,
-                        onRefreshWifiList = onRefreshWifiList,
-                        onSelectWifiNetwork = onSelectWifiNetwork,
-                        onConfirmWifi = onConfirmWifi
-                    )
-                    2 -> ProvisioningStep(message = uiState.pairingMessage)
-                    else -> SuccessStep()
+                AnimatedContent(
+                    targetState = uiState.pairingStep,
+                    transitionSpec = {
+                        val forward = targetState >= initialState
+                        (
+                            slideInHorizontally(
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                                    stiffness = Spring.StiffnessLow
+                                )
+                            ) { fullWidth -> if (forward) fullWidth / 3 else -fullWidth / 3 } + fadeIn()
+                            ).togetherWith(
+                                slideOutHorizontally(
+                                    animationSpec = spring(
+                                        dampingRatio = Spring.DampingRatioNoBouncy,
+                                        stiffness = Spring.StiffnessMediumLow
+                                    )
+                                ) { fullWidth -> if (forward) -fullWidth / 4 else fullWidth / 4 } + fadeOut()
+                            )
+                    },
+                    label = "pairing-step-content"
+                ) { step ->
+                    when (step) {
+                        0 -> ScanStep(
+                            devices = uiState.bleDevices,
+                            selectedDevice = uiState.selectedBleDevice,
+                            busy = uiState.pairingBusy,
+                            message = uiState.pairingMessage,
+                            onSelectBleDevice = onSelectBleDevice,
+                            onNext = onGoToWifiStep
+                        )
+                        1 -> WifiStep(
+                            selectedWifiSsid = uiState.selectedWifiSsid,
+                            currentWifiSsid = uiState.currentWifiSsid,
+                            networks = uiState.availableWifiNetworks,
+                            selectedFrequencyMhz = uiState.selectedWifiFrequencyMhz,
+                            routerPingOk = uiState.routerPingOk,
+                            routerPingInProgress = uiState.routerPingInProgress,
+                            busy = uiState.pairingBusy,
+                            onRefreshWifiList = onRefreshWifiList,
+                            onSelectWifiNetwork = onSelectWifiNetwork,
+                            onConfirmWifi = onConfirmWifi
+                        )
+                        2 -> ProvisioningStep(message = uiState.pairingMessage)
+                        else -> SuccessStep()
+                    }
                 }
             }
         }
@@ -1796,7 +2025,7 @@ private fun PairingTopBar(
     TopAppBar(
         title = { Text("设备配对", fontWeight = FontWeight.Bold) },
         navigationIcon = {
-            IconButton(onClick = if (step == 0) onClose else onBack) {
+            BouncyIconButton(onClick = if (step == 0) onClose else onBack) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
             }
         }
@@ -1805,19 +2034,39 @@ private fun PairingTopBar(
 
 @Composable
 private fun SegmentedStepHeader(currentStep: Int) {
-    val steps = listOf("扫描", "WiFi", "配网", "完成")
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        steps.forEachIndexed { index, label ->
-            Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(7.dp)
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(if (index <= currentStep) ActiveBlue else StepInactive)
+    val safeStep = currentStep.coerceIn(pairingSteps.indices)
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            pairingSteps.forEachIndexed { index, meta ->
+                Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(7.dp)
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(if (index <= safeStep) ActiveBlue else StepInactive)
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        meta.label,
+                        color = if (index == safeStep) ActiveBlue else Muted,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+            }
+        }
+        AnimatedContent(
+            targetState = pairingSteps[safeStep],
+            transitionSpec = {
+                (fadeIn() + slideInVertically { it / 3 }).togetherWith(
+                    fadeOut() + slideOutVertically { -it / 4 }
                 )
-                Spacer(Modifier.height(6.dp))
-                Text(label, color = if (index == currentStep) ActiveBlue else Muted, style = MaterialTheme.typography.labelMedium)
+            },
+            label = "pairing-step-caption"
+        ) { step ->
+            Column {
+                Text(step.label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Ink)
+                Text(step.subtitle, style = MaterialTheme.typography.bodySmall, color = Muted)
             }
         }
     }
@@ -1848,13 +2097,18 @@ private fun ScanStep(
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     devices.forEach { device ->
                         val selected = selectedDevice?.macAddress == device.macAddress
+                        val rowInteraction = remember { MutableInteractionSource() }
                         Row(
                             modifier = Modifier
+                                .springPress(rowInteraction)
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(18.dp))
                                 .background(if (selected) SelectedSurface else CardInner)
                                 .border(1.dp, if (selected) ActiveBlue else Line, RoundedCornerShape(18.dp))
-                                .clickable { onSelectBleDevice(device) }
+                                .clickable(
+                                    interactionSource = rowInteraction,
+                                    indication = null
+                                ) { onSelectBleDevice(device) }
                                 .padding(14.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -1870,7 +2124,7 @@ private fun ScanStep(
             }
         }
         Spacer(Modifier.weight(1f))
-        Button(
+        BouncyButton(
             onClick = onNext,
             enabled = selectedDevice != null && !busy,
             modifier = Modifier.fillMaxWidth(),
@@ -1899,17 +2153,18 @@ private fun WifiStep(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
         FrostedCard {
             Text("连接 WiFi", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Ink)
-            Text("默认选择手机当前网络，也可以点开列表切换。", color = Muted)
-            Spacer(Modifier.height(14.dp))
             WifiCompatibilityNotice(
                 frequencyMhz = selectedFrequencyMhz,
                 routerPingOk = routerPingOk,
                 routerPingInProgress = routerPingInProgress
             )
+            Spacer(Modifier.height(12.dp))
+            Text("默认选择手机当前网络，也可以点开列表切换。", color = Muted)
             Spacer(Modifier.height(12.dp))
             WifiDropdown(
                 selectedWifiSsid = selectedWifiSsid.ifBlank { currentWifiSsid },
@@ -1928,8 +2183,7 @@ private fun WifiStep(
                 modifier = Modifier.fillMaxWidth()
             )
         }
-        Spacer(Modifier.height(18.dp))
-        Button(
+        BouncyButton(
             onClick = { onConfirmWifi(password) },
             enabled = !busy,
             modifier = Modifier.fillMaxWidth(),
@@ -2012,7 +2266,7 @@ private fun WifiDropdown(
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        OutlinedButton(
+        BouncyOutlinedButton(
             onClick = {
                 onRefreshWifiList()
                 expanded = true

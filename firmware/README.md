@@ -1,6 +1,6 @@
 # ESP32 Firmware
 
-当前版本：`V2.4.25`
+当前版本：`V2.5.0`
 
 固件路径：
 
@@ -80,4 +80,4 @@ pin=1
 
 - ESP32 Flash 只保存 WiFi 名称、WiFi 密码和传感器 GPIO 配置。
 - 实时 FSR 历史、触摸事件、会话摘要和导出数据都保存在 Android App 私有数据区。
-- App 默认每 `1s` 通过 HTTP 读取一次 ESP32 当前值；采样间隔可在 App 设置页调整。
+- App 默认每 `1000ms` 通过 HTTP 读取一次 ESP32 当前值；采样间隔可在 App 设置页调整。
