@@ -6,6 +6,8 @@ import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.wifi.WifiManager
 import com.example.esp32controller.model.FSR_ANALOG_MAX_VALUE
+import com.example.esp32controller.model.FsrChangesResult
+import com.example.esp32controller.model.FsrHistoryResult
 import com.example.esp32controller.model.FsrMcpSensor
 import com.example.esp32controller.model.FsrMcpSnapshot
 import com.example.esp32controller.model.FsrSensorReading
@@ -48,12 +50,12 @@ class FsrMcpServer(
         lastMs: Long?,
         intervalMs: Int?,
         compressionTolerance: Int
-    ) -> Any,
+    ) -> FsrHistoryResult,
     private val changesProvider: (
         cursor: Long?,
         names: Set<String>,
         minDelta: Int?
-    ) -> Any,
+    ) -> FsrChangesResult,
     private val onSensorPost: (Map<String, Int>) -> Unit
 ) {
     private val _state = MutableStateFlow(McpServerState())
@@ -205,7 +207,7 @@ class FsrMcpServer(
                     "capabilities" to mapOf("tools" to emptyMap<String, Any>()),
                     "serverInfo" to mapOf(
                         "name" to "esp32-fsr-phone-bridge",
-                        "version" to "V2.3.24"
+                        "version" to "V2.3.25"
                     )
                 )
             )
@@ -233,34 +235,35 @@ class FsrMcpServer(
                         "name" to it.name,
                         "key" to it.key,
                         "pin" to it.pin,
-                        "label" to it.label,
                         "source" to it.source
                     )
                 }
             )
-            "fsr_get_snapshot" -> snapshot
-            "fsr_get_sensor" -> findSensor(snapshot, arguments)
+            "fsr_get_snapshot" -> compactSnapshot(snapshot)
+            "fsr_get_sensor" -> compactSensor(snapshot, arguments)
             "fsr_get_changes" -> {
                 val cursor = arguments.get("cursor")?.asLongOrNull() ?: globalChangeCursor
-                val result = changesProvider(
+                val changes = changesProvider(
                     cursor,
                     namesFromArguments(arguments),
                     arguments.get("min_delta")?.asIntOrNull()
                 )
-                val nextCursor = gson.toJsonTree(result).asJsonObject.get("nextCursor")?.asLongOrNull()
-                if (!arguments.has("cursor") && nextCursor != null) {
-                    globalChangeCursor = nextCursor
+                if (!arguments.has("cursor")) {
+                    globalChangeCursor = changes.nextCursor
                 }
-                result
+                compactChanges(changes)
             }
-            "fsr_get_history" -> historyProvider(
-                namesFromArguments(arguments),
-                arguments.get("fromMs")?.asLongOrNull(),
-                arguments.get("toMs")?.asLongOrNull(),
-                arguments.get("lastMs")?.asLongOrNull(),
-                arguments.get("intervalMs")?.asIntOrNull(),
-                arguments.get("compressionTolerance")?.asIntOrNull()?.coerceAtLeast(0) ?: 15
-            )
+            "fsr_get_history" -> {
+                val history = historyProvider(
+                    namesFromArguments(arguments),
+                    arguments.get("fromMs")?.asLongOrNull(),
+                    arguments.get("toMs")?.asLongOrNull(),
+                    arguments.get("lastMs")?.asLongOrNull(),
+                    arguments.get("intervalMs")?.asIntOrNull(),
+                    arguments.get("compressionTolerance")?.asIntOrNull()?.coerceAtLeast(0) ?: 15
+                )
+                compactHistory(history, arguments)
+            }
             else -> return rpcError(id, -32602, "Unknown tool")
         }
 
@@ -272,14 +275,83 @@ class FsrMcpServer(
                         "type" to "text",
                         "text" to gson.toJson(result)
                     )
-                ),
-                "structuredContent" to result,
-                "isError" to false
+                )
             )
         )
     }
 
-    private fun findSensor(snapshot: FsrMcpSnapshot, arguments: JsonObject): Any {
+    private fun compactSnapshot(snapshot: FsrMcpSnapshot): Map<String, Any?> {
+        return mapOf(
+            "t" to snapshot.updatedAtMillis,
+            "online" to snapshot.deviceOnline,
+            "max" to snapshot.maxValue,
+            "cols" to listOf("s", "v", "d", "ageMs"),
+            "data" to snapshot.sensors.map { sensor ->
+                listOf(sensor.name, sensor.value, sensor.delta, sensor.ageMillis)
+            }
+        )
+    }
+
+    private fun compactSensor(snapshot: FsrMcpSnapshot, arguments: JsonObject): Any {
+        val sensor = findSensor(snapshot, arguments)
+            ?: return mapOf("error" to "sensor_not_found")
+        return mapOf(
+            "s" to sensor.name,
+            "v" to sensor.value,
+            "d" to sensor.delta,
+            "ageMs" to sensor.ageMillis
+        )
+    }
+
+    private fun compactChanges(result: FsrChangesResult): Map<String, Any?> {
+        val changes = result.changes
+        val t0 = changes.firstOrNull()?.t
+        val baseTime = t0 ?: 0L
+        return mapOf(
+            "cursor" to result.cursor,
+            "next" to result.nextCursor,
+            "minD" to result.minDelta,
+            "t0" to t0,
+            "cols" to listOf("s", "dt", "v", "d"),
+            "data" to changes.map { change ->
+                listOf(
+                    change.name,
+                    change.t - baseTime,
+                    change.value,
+                    change.delta
+                )
+            }
+        )
+    }
+
+    private fun compactHistory(result: FsrHistoryResult, arguments: JsonObject): Map<String, Any?> {
+        val rawMode = arguments.get("mode")?.asStringOrNull()?.equals("raw", ignoreCase = true) == true ||
+            arguments.get("includeRaw")?.asBooleanOrFalse() == true
+        val cols = if (rawMode) listOf("t", "v") else listOf("from", "to", "v")
+        return mapOf(
+            "t0" to result.fromMs,
+            "to" to result.toMs,
+            "max" to result.maxValue,
+            "mode" to if (rawMode) "raw" else "segments",
+            "cols" to cols,
+            "series" to result.series.map { series ->
+                mapOf(
+                    "s" to series.name,
+                    "data" to if (rawMode) {
+                        series.data.map { point ->
+                            listOf(point.t - result.fromMs, point.value)
+                        }
+                    } else {
+                        series.compressed.map { segment ->
+                            listOf(segment.fromMs - result.fromMs, segment.toMs - result.fromMs, segment.value)
+                        }
+                    }
+                )
+            }
+        )
+    }
+
+    private fun findSensor(snapshot: FsrMcpSnapshot, arguments: JsonObject): FsrMcpSensor? {
         val sensorName = arguments.get("name")?.asStringOrNull()
         val pin = arguments.get("pin")?.asIntOrNull()
         val key = arguments.get("key")?.asStringOrNull()
@@ -289,7 +361,7 @@ class FsrMcpServer(
                 pin != null && sensor.pin == pin ||
                 !key.isNullOrBlank() && sensor.key.equals(key, ignoreCase = true) ||
                 !label.isNullOrBlank() && sensor.label.equals(label, ignoreCase = true)
-        } ?: mapOf("error" to "sensor_not_found")
+        }
     }
 
     private fun toolDefinitions(): List<Map<String, Any>> {
@@ -303,13 +375,13 @@ class FsrMcpServer(
             ),
             mapOf(
                 "name" to "fsr_get_snapshot",
-                "description" to "读取所有 FSR402 传感器的当前 12 位 ADC 值、变化量和更新时间。",
+                "description" to "紧凑读取所有 FSR402 传感器的当前 12 位 ADC 值，返回列为 s/name、v/value、d/delta、ageMs。",
                 "inputSchema" to mapOf("type" to "object", "properties" to emptyMap<String, Any>()),
                 "annotations" to readOnly
             ),
             mapOf(
                 "name" to "fsr_get_sensor",
-                "description" to "按用户命名、GPIO 或 key 读取单个 FSR402 传感器。",
+                "description" to "按用户命名、GPIO 或 key 紧凑读取单个 FSR402 传感器。",
                 "inputSchema" to mapOf(
                     "type" to "object",
                     "properties" to mapOf(
@@ -323,13 +395,13 @@ class FsrMcpServer(
             ),
             mapOf(
                 "name" to "fsr_get_changes",
-                "description" to "读取上一次调用之后发生变化的传感器事件，只返回变化数据。",
+                "description" to "紧凑读取上一次调用之后发生变化的传感器事件；data 按 cols=[s,dt,v,d] 返回。",
                 "inputSchema" to mapOf(
                     "type" to "object",
                     "properties" to mapOf(
                         "name" to mapOf("type" to "string", "description" to "只看某个用户命名的传感器"),
                         "names" to mapOf("type" to "array", "items" to mapOf("type" to "string")),
-                        "cursor" to mapOf("type" to "integer", "description" to "上一次返回的 nextCursor；不传则自动接着上次位置"),
+                        "cursor" to mapOf("type" to "integer", "description" to "上一次返回的 next；不传则自动接着上次位置"),
                         "min_delta" to mapOf("type" to "integer", "description" to "最小变化量，默认 8，范围按 0-4095 计算")
                     )
                 ),
@@ -337,7 +409,7 @@ class FsrMcpServer(
             ),
             mapOf(
                 "name" to "fsr_get_history",
-                "description" to "读取最近 2 分钟内 FSR402 传感器的 App 私有数据区历史缓存，包含抽样点和压缩稳定段。",
+                "description" to "紧凑读取最近 2 分钟历史缓存；默认返回压缩段 data=[from,to,v]，mode=raw 时返回原始点 data=[t,v]。",
                 "inputSchema" to mapOf(
                     "type" to "object",
                     "properties" to mapOf(
@@ -347,7 +419,9 @@ class FsrMcpServer(
                         "toMs" to mapOf("type" to "integer", "description" to "结束时间戳，毫秒，默认当前时间"),
                         "lastMs" to mapOf("type" to "integer", "description" to "最近多少毫秒，默认 120000"),
                         "intervalMs" to mapOf("type" to "integer", "description" to "返回点的抽样间隔，默认 500"),
-                        "compressionTolerance" to mapOf("type" to "integer", "description" to "压缩稳定段的数值容差，默认 15")
+                        "compressionTolerance" to mapOf("type" to "integer", "description" to "压缩稳定段的数值容差，默认 15"),
+                        "mode" to mapOf("type" to "string", "description" to "默认 segments；传 raw 返回原始点"),
+                        "includeRaw" to mapOf("type" to "boolean", "description" to "true 等同于 mode=raw")
                     )
                 ),
                 "annotations" to readOnly
@@ -482,6 +556,10 @@ class FsrMcpServer(
 
     private fun JsonElement.asStringOrNull(): String? {
         return runCatching { asString }.getOrNull()
+    }
+
+    private fun JsonElement.asBooleanOrFalse(): Boolean {
+        return runCatching { asBoolean }.getOrDefault(false)
     }
 
     private data class HttpRequest(

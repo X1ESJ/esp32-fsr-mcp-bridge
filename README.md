@@ -6,7 +6,7 @@ All rights reserved.
 
 Licensed under BSD 2-Clause License.
 
-当前版本：`V2.3.24`
+当前版本：`V2.3.25`
 
 作者：琳云 XESJ
 
@@ -314,7 +314,7 @@ Cursor 示例，可放到项目级 `.cursor/mcp.json` 或客户端设置里的 M
 
 ### 6.2 `fsr_get_snapshot`
 
-功能：获取全部传感器的实时快照。
+功能：紧凑获取全部传感器的实时快照。传感器身份映射请先调用 `fsr_list_sensors`，高频读取时不重复返回 GPIO、key、source。
 
 传入值：
 
@@ -326,27 +326,17 @@ Cursor 示例，可放到项目级 `.cursor/mcp.json` 或客户端设置里的 M
 
 ```json
 {
-  "deviceName": "ESP32-Provision",
-  "deviceIp": "192.168.1.13",
-  "deviceOnline": true,
-  "updatedAtMillis": 1785930000000,
-  "sensors": [
-    {
-      "name": "左耳",
-      "pin": 1,
-      "key": "gpio_1",
-      "value": 2300,
-      "previousValue": 2250,
-      "delta": 50,
-      "percent": 56
-    }
-  ]
+  "t": 1785930000000,
+  "online": true,
+  "max": 4095,
+  "cols": ["s", "v", "d", "ageMs"],
+  "data": [["左耳", 2300, 50, 120]]
 }
 ```
 
 ### 6.3 `fsr_get_sensor`
 
-功能：按用户命名、GPIO 或 key 获取单个传感器。
+功能：按用户命名、GPIO 或 key 紧凑获取单个传感器。
 
 传入值：
 
@@ -366,9 +356,15 @@ Cursor 示例，可放到项目级 `.cursor/mcp.json` 或客户端设置里的 M
 {"error":"sensor_not_found"}
 ```
 
+命中时返回：
+
+```json
+{"s":"左耳","v":2300,"d":50,"ageMs":120}
+```
+
 ### 6.4 `fsr_get_changes`
 
-功能：获取上一次调用之后发生变化的数据，只返回变化项。
+功能：紧凑获取上一次调用之后发生变化的数据，只返回变化项。
 
 传入值：
 
@@ -385,25 +381,19 @@ Cursor 示例，可放到项目级 `.cursor/mcp.json` 或客户端设置里的 M
 ```json
 {
   "cursor": 12,
-  "nextCursor": 15,
-  "minDelta": 8,
-  "changes": [
-    {
-      "sequence": 13,
-      "name": "左耳",
-      "pin": 1,
-      "value": 2300,
-      "previousValue": 2250,
-      "delta": 50,
-      "absoluteDelta": 50
-    }
-  ]
+  "next": 15,
+  "minD": 8,
+  "t0": 1785924541590,
+  "cols": ["s", "dt", "v", "d"],
+  "data": [["左耳", 0, 2300, 50]]
 }
 ```
 
+说明：`s` 是传感器名称，`dt` 是相对 `t0` 的毫秒偏移，`v` 是当前 ADC 值，`d` 是带正负号差值。这里不再重复返回 `pin`、`key`、`source`、`previousValue` 和 `absoluteDelta`。
+
 ### 6.5 `fsr_get_history`
 
-功能：获取最近 2 分钟 App 私有数据区历史缓存，包含抽样点和压缩稳定段。
+功能：紧凑获取最近 2 分钟 App 私有数据区历史缓存。默认返回压缩段，需要原始点时传 `mode=raw` 或 `includeRaw=true`。
 
 传入值：
 
@@ -412,7 +402,38 @@ Cursor 示例，可放到项目级 `.cursor/mcp.json` 或客户端设置里的 M
   "names": ["左耳"],
   "lastMs": 120000,
   "intervalMs": 500,
-  "compressionTolerance": 15
+  "compressionTolerance": 15,
+  "mode": "segments"
+}
+```
+
+默认返回示例：
+
+```json
+{
+  "t0": 1785924689000,
+  "to": 1785924809000,
+  "max": 4095,
+  "mode": "segments",
+  "cols": ["from", "to", "v"],
+  "series": [
+    {"s": "左耳", "data": [[0, 2500, 941], [2500, 3000, 1020]]}
+  ]
+}
+```
+
+原始点返回示例：
+
+```json
+{
+  "t0": 1785924689000,
+  "to": 1785924809000,
+  "max": 4095,
+  "mode": "raw",
+  "cols": ["t", "v"],
+  "series": [
+    {"s": "左耳", "data": [[0, 941], [500, 950]]}
+  ]
 }
 ```
 
@@ -421,9 +442,9 @@ Cursor 示例，可放到项目级 `.cursor/mcp.json` 或客户端设置里的 M
 - App 固定每 `0.5s` 采集一次，2 分钟最多约 `240` 帧。
 - 10 个传感器同时启用时，最多约 `2400` 个原始点。
 - 默认压缩容差为 `±15` 个 ADC 值。
-- `compressed` 会把连续相邻、且相对区间起点和上一点都没有超过容差的采样合并为区间记录。
+- `segments` 模式会把连续相邻、且相对区间起点和上一点都没有超过容差的采样合并为 `[from,to,v]` 区间记录。
 - 当前压缩逻辑没有硬性要求连续 `20` 帧才合并，这样可以保留短时间触摸动作的细节。
-- 如果需要原始点，请让 AI 读取返回体里的 `data`；如果只看趋势，可优先读 `compressed`。
+- 如果需要原始点，请传 `mode=raw`；如果只看趋势，默认 `segments` 最省 token。
 - 实时传感器历史只保存在 Android App 私有数据区的滚动缓存里；ESP32 Flash 只保存 WiFi 和传感器配置。
 
 AI Prompt 示例：
@@ -600,6 +621,13 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware\Esp32_wifi_connect
 - 支持更长时间的本地历史持久化。
 
 ## 13. 更新日志 Changelog
+
+### V2.3.25
+
+- MCP 高频数据工具改为紧凑返回格式，减少 token 消耗。
+- `fsr_get_changes` 删除重复字段，只返回传感器名、相对时间、当前值和带正负号差值。
+- `fsr_get_history` 默认返回压缩段 `[from,to,v]`，需要原始点时可传 `mode=raw`。
+- 传感器 GPIO、key、source 等身份信息集中在 `fsr_list_sensors` 返回。
 
 ### V2.3.24
 

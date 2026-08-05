@@ -1089,31 +1089,31 @@ private val mcpToolDocs = listOf(
     ),
     McpToolDoc(
         name = "fsr_get_snapshot",
-        purpose = "读取所有传感器当前最新值。",
-        setting = "适合回答“现在娃娃哪里被按压了”这类实时问题。",
+        purpose = "紧凑读取所有传感器当前最新值。",
+        setting = "适合回答“现在娃娃哪里被按压了”这类实时问题；身份信息请先看 fsr_list_sensors。",
         inputs = listOf("无"),
-        returns = listOf("deviceName/deviceIp/deviceOnline：设备信息", "sensors：每路传感器 value、delta、percent、ageMillis", "value 范围：0-4095，12 位 ADC 原始值")
+        returns = listOf("t：快照时间", "online/max：在线状态和 ADC 最大值", "cols=[s,v,d,ageMs]", "data：传感器名、当前值、带正负号差值、数据年龄")
     ),
     McpToolDoc(
         name = "fsr_get_sensor",
-        purpose = "读取单个传感器的当前值。",
+        purpose = "紧凑读取单个传感器的当前值。",
         setting = "推荐优先传入 App 中用户命名的 name，例如“左耳”。",
         inputs = listOf("name：用户命名的传感器名称", "pin：GPIO 编号，例如 4", "key：内部 key，例如 gpio_4", "label：兼容旧字段，等同于 name"),
-        returns = listOf("命中的单个传感器对象", "找不到时返回 error=sensor_not_found")
+        returns = listOf("s：传感器名", "v：当前值", "d：带正负号差值", "ageMs：数据年龄", "找不到时返回 error=sensor_not_found")
     ),
     McpToolDoc(
         name = "fsr_get_changes",
-        purpose = "读取上次调用之后发生变化的数据，只返回变化项。",
-        setting = "适合聊天应用持续观察触摸变化，减少重复数据。",
-        inputs = listOf("cursor：上次返回的 nextCursor，不传则 App 自动接着上次位置", "name/names：只观察指定传感器", "min_delta：最小变化量，默认 8"),
-        returns = listOf("cursor/nextCursor：变化游标", "changes：变化事件列表，含 value、previousValue、delta、absoluteDelta、percent")
+        purpose = "紧凑读取上次调用之后发生变化的数据。",
+        setting = "适合聊天应用持续观察触摸变化；身份信息不重复返回，先用 fsr_list_sensors 看映射。",
+        inputs = listOf("cursor：上次返回的 next，不传则 App 自动接着上次位置", "name/names：只观察指定传感器", "min_delta：最小变化量，默认 8"),
+        returns = listOf("cursor/next/minD：游标和阈值", "t0：基准时间戳", "cols=[s,dt,v,d]", "data：传感器名、相对 t0 的毫秒偏移、当前值、带正负号差值")
     ),
     McpToolDoc(
         name = "fsr_get_history",
         purpose = "读取最近 2 分钟的 App 私有数据区历史缓存。",
-        setting = "适合分析一段时间内的触摸强弱、持续时间和变化趋势。",
-        inputs = listOf("name/names：筛选传感器", "lastMs：最近多少毫秒，默认 120000", "fromMs/toMs：时间戳范围", "intervalMs：抽样间隔，默认 500", "compressionTolerance：稳定段压缩容差，默认 15"),
-        returns = listOf("series：每个传感器一组历史数据", "data：抽样点", "compressed：压缩后的稳定段，含 fromMs、toMs、minValue、maxValue、samples")
+        setting = "默认返回压缩段，尽量省 token；需要原始点时传 mode=raw 或 includeRaw=true。",
+        inputs = listOf("name/names：筛选传感器", "lastMs：最近多少毫秒，默认 120000", "fromMs/toMs：时间戳范围", "intervalMs：抽样间隔，默认 500", "compressionTolerance：稳定段压缩容差，默认 15", "mode：默认 segments，可传 raw"),
+        returns = listOf("t0/to/max/mode：时间基准、结束时间、ADC 最大值、返回模式", "segments 模式 cols=[from,to,v]", "raw 模式 cols=[t,v]", "series：每个传感器的紧凑数组")
     )
 )
 
