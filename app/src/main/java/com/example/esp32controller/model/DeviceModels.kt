@@ -187,7 +187,8 @@ data class FsrDatabaseStats(
     val sessionRows: Long = 0,
     val minuteRows: Long = 0,
     val pendingUploads: Long = 0,
-    val lastSampleAtMs: Long? = null
+    val lastSampleAtMs: Long? = null,
+    val activeArchiveDir: String? = null
 )
 
 data class SupabaseSyncState(

@@ -123,6 +123,7 @@ import com.example.esp32controller.model.WifiNetworkOption
 import com.example.esp32controller.viewmodel.MainUiState
 import com.example.esp32controller.viewmodel.displayLabel
 import com.example.esp32controller.viewmodel.sensorKey
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -299,6 +300,7 @@ fun MainScreen(
     onUpdateTriggerThreshold: (Int) -> Unit,
     onUpdateSupabaseSettings: (SupabaseSettings) -> Unit,
     onExportDatabase: () -> Unit,
+    onClearDatabase: () -> Unit,
     onSaveFsrSensor: (Int, String) -> Unit,
     onDeleteSensor: (PinConfig) -> Unit,
     onRetryMdns: () -> Unit,
@@ -410,7 +412,8 @@ fun MainScreen(
                     onUpdateSampleInterval = onUpdateSampleInterval,
                     onUpdateTriggerThreshold = onUpdateTriggerThreshold,
                     onUpdateSupabaseSettings = onUpdateSupabaseSettings,
-                    onExportDatabase = onExportDatabase
+                    onExportDatabase = onExportDatabase,
+                    onClearDatabase = onClearDatabase
                 )
             }
 
@@ -1064,7 +1067,8 @@ private fun SettingsScreen(
     onUpdateSampleInterval: (Long) -> Unit,
     onUpdateTriggerThreshold: (Int) -> Unit,
     onUpdateSupabaseSettings: (SupabaseSettings) -> Unit,
-    onExportDatabase: () -> Unit
+    onExportDatabase: () -> Unit,
+    onClearDatabase: () -> Unit
 ) {
     Surface(color = ScreenSurface, modifier = Modifier.fillMaxSize()) {
         Scaffold(
@@ -1104,8 +1108,10 @@ private fun SettingsScreen(
                     LocalDatabaseCard(
                         stats = uiState.databaseStats,
                         exportBusy = uiState.exportBusy,
+                        clearBusy = uiState.clearDatabaseBusy,
                         exportMessage = uiState.exportMessage,
-                        onExportDatabase = onExportDatabase
+                        onExportDatabase = onExportDatabase,
+                        onClearDatabase = onClearDatabase
                     )
                 }
                 item {
@@ -1238,9 +1244,20 @@ private fun SamplingSettingsCard(
 private fun LocalDatabaseCard(
     stats: FsrDatabaseStats,
     exportBusy: Boolean,
+    clearBusy: Boolean,
     exportMessage: String?,
-    onExportDatabase: () -> Unit
+    onExportDatabase: () -> Unit,
+    onClearDatabase: () -> Unit
 ) {
+    var clearConfirmVisible by remember { mutableStateOf(false) }
+    var clearEnabled by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        clearEnabled = false
+        delay(3_000L)
+        clearEnabled = true
+    }
+
     FrostedCard {
         Text("本地数据库", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Ink)
         Spacer(Modifier.height(6.dp))
@@ -1257,18 +1274,64 @@ private fun LocalDatabaseCard(
         }
         Spacer(Modifier.height(12.dp))
         InfoLine("最近采样", stats.lastSampleAtMs?.let(::formatClockTime) ?: "还没有数据")
-        BouncyButton(
-            onClick = onExportDatabase,
-            enabled = !exportBusy,
+        stats.activeArchiveDir?.let { path ->
+            InfoLine("当前记录目录", path)
+        }
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(999.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text(if (exportBusy) "正在导出..." else "导出 JSON")
+            BouncyOutlinedButton(
+                onClick = { clearConfirmVisible = true },
+                enabled = clearEnabled && !clearBusy,
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(999.dp),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = DangerRed,
+                    disabledContentColor = DangerRed.copy(alpha = 0.45f)
+                )
+            ) {
+                Text(
+                    if (clearBusy) "清空中..." else if (clearEnabled) "清空数据库" else "3s 后可清空",
+                    color = if (clearEnabled && !clearBusy) DangerRed else Muted
+                )
+            }
+            BouncyButton(
+                onClick = onExportDatabase,
+                enabled = !exportBusy && !clearBusy,
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(999.dp)
+            ) {
+                Text(if (exportBusy) "正在导出..." else "导出 JSON")
+            }
         }
         if (!exportMessage.isNullOrBlank()) {
             Spacer(Modifier.height(8.dp))
             Text(exportMessage, color = Muted, style = MaterialTheme.typography.bodySmall)
         }
+    }
+
+    if (clearConfirmVisible) {
+        AlertDialog(
+            onDismissRequest = { clearConfirmVisible = false },
+            title = { Text("确认清空数据库") },
+            text = { Text("这会清空当前本地数据库内容，并从新的记录目录重新开始写入。旧目录里的长期记录文件不会删除。") },
+            confirmButton = {
+                BouncyTextButton(
+                    onClick = {
+                        clearConfirmVisible = false
+                        onClearDatabase()
+                    }
+                ) {
+                    Text("确认", color = DangerRed)
+                }
+            },
+            dismissButton = {
+                BouncyTextButton(onClick = { clearConfirmVisible = false }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 }
 
@@ -1533,28 +1596,16 @@ private fun RollingNumberText(
     value: Int,
     style: TextStyle,
     color: Color,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    minDigits: Int = 1,
+    cellWidthFactor: Float = 0.62f
 ) {
-    val targetText = value.toString()
-    var previousText by remember { mutableStateOf(targetText) }
-    var activeText by remember { mutableStateOf(targetText) }
-    val cellWidth = ((style.fontSize.value * 0.68f).coerceAtLeast(12f)).dp
-    val paddedLength = maxOf(previousText.length, activeText.length)
-    val oldText = previousText.padStart(paddedLength, ' ')
-    val newText = activeText.padStart(paddedLength, ' ')
-
-    LaunchedEffect(targetText) {
-        if (targetText != activeText) {
-            previousText = activeText
-            activeText = targetText
-        }
-    }
+    val targetText = value.toString().padStart(minDigits, ' ')
+    val cellWidth = ((style.fontSize.value * cellWidthFactor).coerceAtLeast(8f)).dp
 
     Row(modifier = modifier, verticalAlignment = Alignment.Bottom) {
-        newText.forEachIndexed { index, currentChar ->
-            val previousChar = oldText[index]
+        targetText.forEach { currentChar ->
             RollingDigit(
-                previousChar = previousChar,
                 currentChar = currentChar,
                 style = style.copy(fontFamily = FontFamily.Monospace),
                 color = color,
@@ -1567,7 +1618,6 @@ private fun RollingNumberText(
 @OptIn(ExperimentalAnimationApi::class)
 @Composable
 private fun RollingDigit(
-    previousChar: Char,
     currentChar: Char,
     style: TextStyle,
     color: Color,
@@ -1577,49 +1627,39 @@ private fun RollingDigit(
         modifier = Modifier.widthIn(min = cellWidth),
         contentAlignment = Alignment.Center
     ) {
-        if (previousChar == currentChar) {
+        AnimatedContent(
+            targetState = currentChar,
+            transitionSpec = {
+                val direction = when {
+                    targetState.isDigit() && initialState.isDigit() ->
+                        if (targetState.digitToInt() >= initialState.digitToInt()) 1 else -1
+                    targetState == ' ' -> -1
+                    else -> 1
+                }
+                (
+                    slideInVertically(
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            stiffness = Spring.StiffnessLow
+                        )
+                    ) { fullHeight -> direction * fullHeight } + fadeIn()
+                    ).togetherWith(
+                        slideOutVertically(
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                stiffness = Spring.StiffnessMediumLow
+                            )
+                        ) { fullHeight -> -direction * fullHeight } + fadeOut()
+                    )
+            },
+            label = "rolling-digit"
+        ) { char ->
             Text(
-                text = currentChar.takeIf { it != ' ' }?.toString().orEmpty(),
+                text = char.takeIf { it != ' ' }?.toString().orEmpty(),
                 style = style,
                 fontWeight = FontWeight.Black,
                 color = color
             )
-        } else {
-            AnimatedContent(
-                targetState = currentChar,
-                transitionSpec = {
-                    val direction = when {
-                        targetState.isDigit() && initialState.isDigit() -> {
-                            if (targetState.digitToInt() >= initialState.digitToInt()) 1 else -1
-                        }
-                        targetState == ' ' -> -1
-                        else -> 1
-                    }
-                    (
-                        slideInVertically(
-                            animationSpec = spring(
-                                dampingRatio = Spring.DampingRatioMediumBouncy,
-                                stiffness = Spring.StiffnessLow
-                            )
-                        ) { fullHeight -> direction * fullHeight } + fadeIn()
-                        ).togetherWith(
-                            slideOutVertically(
-                                animationSpec = spring(
-                                    dampingRatio = Spring.DampingRatioNoBouncy,
-                                    stiffness = Spring.StiffnessMediumLow
-                                )
-                            ) { fullHeight -> -direction * fullHeight } + fadeOut()
-                        )
-                },
-                label = "rolling-digit"
-            ) { char ->
-                Text(
-                    text = char.takeIf { it != ' ' }?.toString().orEmpty(),
-                    style = style,
-                    fontWeight = FontWeight.Black,
-                    color = color
-                )
-            }
         }
     }
 }
@@ -1638,23 +1678,27 @@ private fun DeltaChip(delta: Int) {
     }
     Box(
         modifier = Modifier
+            .width(56.dp)
             .clip(RoundedCornerShape(999.dp))
             .background(color.copy(alpha = 0.12f))
-            .padding(horizontal = 9.dp, vertical = 5.dp)
+            .padding(horizontal = 6.dp, vertical = 5.dp),
+        contentAlignment = Alignment.Center
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(0.dp)) {
             if (delta != 0) {
                 Text(
                     sign,
                     color = color,
-                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
                     fontWeight = FontWeight.Bold
                 )
             }
             RollingNumberText(
                 value = abs(delta),
-                style = MaterialTheme.typography.labelMedium.copy(fontSize = 13.sp),
-                color = color
+                style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp),
+                color = color,
+                minDigits = 1,
+                cellWidthFactor = 0.44f
             )
         }
     }
@@ -1719,29 +1763,33 @@ private fun FsrHistoryChart(history: List<PinHistoryPoint>) {
             )
         }
 
+        val minSecond = sorted.firstOrNull()?.second ?: 0
+        val maxSecond = sorted.lastOrNull()?.second?.coerceAtLeast(minSecond + 1) ?: (minSecond + 1)
+        fun pointX(second: Int): Float {
+            val progress = ((second - minSecond).toFloat() / (maxSecond - minSecond).toFloat()).coerceIn(0f, 1f)
+            return left + (right - left) * progress
+        }
+        fun pointY(value: Int): Float {
+            return bottom - (bottom - top) * (value.toFloat() / FSR_ANALOG_MAX_VALUE.toFloat()).coerceIn(0f, 1f)
+        }
+
         if (sorted.size >= 2) {
-            val minSecond = sorted.first().second
-            val maxSecond = (minSecond + 120).coerceAtLeast(sorted.last().second)
             val path = Path()
             sorted.forEachIndexed { index, point ->
-                val xProgress = if (maxSecond == minSecond) 0f else {
-                    (point.second - minSecond).toFloat() / (maxSecond - minSecond).toFloat()
-                }
-                val x = left + (right - left) * xProgress.coerceIn(0f, 1f)
-                val y = bottom - (bottom - top) * (point.value.toFloat() / FSR_ANALOG_MAX_VALUE.toFloat()).coerceIn(0f, 1f)
+                val x = pointX(point.second)
+                val y = pointY(point.value)
                 if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
             }
             drawPath(path, color = pathColor, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f, cap = StrokeCap.Round))
         }
 
-        val recent = sorted.lastOrNull()
-        if (recent != null) {
+        sorted.lastOrNull()?.let { recent ->
             drawCircle(
                 color = pointerColor,
                 radius = 5f,
                 center = Offset(
-                    x = right,
-                    y = bottom - (bottom - top) * (recent.value.toFloat() / FSR_ANALOG_MAX_VALUE.toFloat()).coerceIn(0f, 1f)
+                    x = pointX(recent.second),
+                    y = pointY(recent.value)
                 )
             )
         }
@@ -2178,8 +2226,7 @@ private fun WifiStep(
                 onValueChange = { password = it },
                 label = { Text("WiFi 密码") },
                 singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
                 modifier = Modifier.fillMaxWidth()
             )
         }

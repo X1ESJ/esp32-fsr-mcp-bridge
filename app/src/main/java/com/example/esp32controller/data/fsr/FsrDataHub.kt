@@ -1,6 +1,7 @@
 package com.example.esp32controller.data.fsr
 
 import android.content.Context
+import android.net.Uri
 import com.example.esp32controller.data.mcp.toMcpSensor
 import com.example.esp32controller.model.DEFAULT_FSR_HISTORY_WINDOW_MS
 import com.example.esp32controller.model.FSR_ANALOG_MAX_VALUE
@@ -40,6 +41,7 @@ private const val MAX_CHANGE_EVENTS = 2400
 private const val CACHE_DIR_NAME = "fsr-cache"
 private const val CACHE_FILE_NAME = "recent_sensor_cache.json"
 private const val DATABASE_STATS_REFRESH_MS = 5_000L
+private const val CHART_WINDOW_SECONDS = 60
 
 data class FsrBridgeState(
     val selectedDevice: StoredDevice? = null,
@@ -61,6 +63,7 @@ object FsrDataHub {
     private val latestReadings = linkedMapOf<String, FsrSensorReading>()
     private val latestConfigs = linkedMapOf<String, PinConfig>()
     private val history = linkedMapOf<String, ArrayDeque<FsrHistoryPoint>>()
+    private val chartHistory = linkedMapOf<String, ArrayDeque<PinHistoryPoint>>()
     private val changeEvents = ArrayDeque<FsrChangeEvent>()
     private val persistExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "fsr-cache-writer").apply { isDaemon = true }
@@ -73,6 +76,7 @@ object FsrDataHub {
     private var nextSequence = 1L
     private var lastSampleRecordedAt = 0L
     private var lastStatsPublishedAt = 0L
+    private var chartStartedAt = 0L
 
     private val _state = MutableStateFlow(FsrBridgeState())
     val state: StateFlow<FsrBridgeState> = _state.asStateFlow()
@@ -135,8 +139,10 @@ object FsrDataHub {
                     latestConfigs.clear()
                     latestReadings.clear()
                     history.clear()
+                    chartHistory.clear()
                     changeEvents.clear()
                     nextSequence = 1L
+                    chartStartedAt = 0L
                     shouldPersist = true
                 }
                 it.copy(
@@ -402,6 +408,36 @@ object FsrDataHub {
         return file
     }
 
+    fun buildSuggestedExportFileName(): String {
+        return database?.buildSuggestedExportFileName() ?: "fsr-export.json"
+    }
+
+    fun exportDatabaseToUri(context: Context, uri: Uri): Boolean {
+        val target = database ?: return false
+        target.exportToUri(context.applicationContext, uri)
+        refreshDatabaseStats(force = true)
+        return true
+    }
+
+    fun clearDatabase(): String? {
+        val target = database ?: return null
+        val nextDir = target.clearAllAndRotateArchive()
+        synchronized(lock) {
+            history.clear()
+            chartHistory.clear()
+            changeEvents.clear()
+            latestReadings.clear()
+            nextSequence = 1L
+            lastSampleRecordedAt = 0L
+            chartStartedAt = 0L
+            recorder?.resetRuntime()
+        }
+        persistCacheSnapshot()
+        refreshDatabaseStats(force = true)
+        publishState()
+        return nextDir.absolutePath
+    }
+
     fun flushRecorder() {
         recorder?.flushCurrentMinute()
         refreshDatabaseStats(force = true)
@@ -440,6 +476,7 @@ object FsrDataHub {
             percent = (normalized * 100f).roundToInt().coerceIn(0, 100)
         )
         history.getOrPut(key) { ArrayDeque() }.addLast(point)
+        appendChartPoint(key = key, now = now, value = safeValue)
 
         if (delta != 0) {
             changeEvents.addLast(
@@ -464,8 +501,6 @@ object FsrDataHub {
     }
 
     private fun publishState() {
-        val now = System.currentTimeMillis()
-        val windowMs = currentSettings.historyWindowMs
         val configs: List<PinConfig>
         val readings: List<FsrSensorReading>
         val uiHistory: Map<String, List<PinHistoryPoint>>
@@ -473,14 +508,7 @@ object FsrDataHub {
             configs = latestConfigs.values.sortedBy { it.pin }
             readings = latestReadings.values
                 .sortedWith(compareBy<FsrSensorReading> { it.pin ?: Int.MAX_VALUE }.thenBy { it.name })
-            uiHistory = history.mapValues { (_, points) ->
-                points.map { point ->
-                    PinHistoryPoint(
-                        second = ((point.t - (now - windowMs)) / 1000L).toInt().coerceAtLeast(0),
-                        value = point.value
-                    )
-                }
-            }
+            uiHistory = chartHistory.mapValues { (_, points) -> points.toList() }
         }
         _state.update {
             it.copy(
@@ -503,6 +531,26 @@ object FsrDataHub {
         }
     }
 
+    private fun appendChartPoint(
+        key: String,
+        now: Long,
+        value: Int
+    ) {
+        if (chartStartedAt == 0L) {
+            chartStartedAt = now
+        }
+        val elapsedSecond = ((now - chartStartedAt) / 1000L).toInt().coerceAtLeast(0)
+        val points = chartHistory.getOrPut(key) { ArrayDeque() }
+        if (points.lastOrNull()?.second == elapsedSecond) {
+            points.removeLast()
+        }
+        points.addLast(PinHistoryPoint(second = elapsedSecond, value = value))
+        val oldestSecond = (elapsedSecond - CHART_WINDOW_SECONDS + 1).coerceAtLeast(0)
+        while (points.firstOrNull()?.second?.let { it < oldestSecond } == true) {
+            points.removeFirst()
+        }
+    }
+
     private fun loadCacheLocked(file: File, now: Long) {
         if (!file.exists()) return
         val loaded = runCatching {
@@ -512,6 +560,7 @@ object FsrDataHub {
         latestConfigs.clear()
         latestReadings.clear()
         history.clear()
+        chartHistory.clear()
         changeEvents.clear()
 
         val oldest = now - currentSettings.historyWindowMs

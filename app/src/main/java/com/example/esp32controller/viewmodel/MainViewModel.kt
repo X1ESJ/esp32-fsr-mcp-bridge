@@ -6,6 +6,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.Uri
 import android.net.wifi.ScanResult
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -100,6 +101,7 @@ data class MainUiState(
     val supabaseSyncState: SupabaseSyncState = SupabaseSyncState(),
     val settingsVisible: Boolean = false,
     val exportBusy: Boolean = false,
+    val clearDatabaseBusy: Boolean = false,
     val exportMessage: String? = null,
     val bleWifiError: String? = null,
     val selectedWifiFrequencyMhz: Int? = null,
@@ -124,7 +126,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val previousSensorValues = mutableMapOf<String, Int>()
     private val polledReadings = linkedMapOf<String, FsrSensorReading>()
     private val pushedReadings = linkedMapOf<String, FsrSensorReading>()
-    private val pinHistoryStartedAt = System.currentTimeMillis()
 
     private var observeStoreJob: Job? = null
     private var observeSettingsJob: Job? = null
@@ -391,17 +392,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun exportFsrDatabase() {
+    fun buildSuggestedExportFileName(): String {
+        return FsrDataHub.buildSuggestedExportFileName()
+    }
+
+    fun exportFsrDatabaseToUri(uri: Uri) {
         viewModelScope.launch {
             _uiState.update { it.copy(exportBusy = true, exportMessage = null) }
-            val file = withContext(Dispatchers.IO) {
+            val success = withContext(Dispatchers.IO) {
                 FsrDataHub.flushRecorder()
-                FsrDataHub.exportDatabase(appContext)
+                FsrDataHub.exportDatabaseToUri(appContext, uri)
             }
             _uiState.update {
                 it.copy(
                     exportBusy = false,
-                    exportMessage = file?.absolutePath ?: "导出失败，请稍后重试"
+                    exportMessage = if (success) "导出完成" else "导出失败，请稍后重试"
+                )
+            }
+        }
+    }
+
+    fun markExportCancelled() {
+        _uiState.update { it.copy(exportMessage = "已取消导出") }
+    }
+
+    fun clearDatabase() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(clearDatabaseBusy = true, exportMessage = null) }
+            val nextDir = withContext(Dispatchers.IO) {
+                FsrDataHub.flushRecorder()
+                FsrDataHub.clearDatabase()
+            }
+            previousSensorValues.clear()
+            polledReadings.clear()
+            pushedReadings.clear()
+            _uiState.update {
+                it.copy(
+                    clearDatabaseBusy = false,
+                    sensorReadings = emptyList(),
+                    sensorHistory = emptyMap(),
+                    exportMessage = nextDir?.let { path -> "数据库已清空，新记录目录：$path" } ?: "清空失败，请稍后重试"
                 )
             }
         }
@@ -562,7 +592,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         nextCapabilities: List<PinCapability>?
     ) {
         val now = System.currentTimeMillis()
-        val elapsedSecond = ((now - pinHistoryStartedAt) / 1000L).toInt()
         val sortedConfigs = configs.sortedBy { it.pin }
         val configuredKeys = sortedConfigs.map { it.sensorKey() }.toSet()
 
@@ -589,23 +618,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .forEach { staleKey -> polledReadings.remove(staleKey) }
 
         _uiState.update { state ->
-            val nextHistory = state.sensorHistory.toMutableMap()
-            polledReadings.values.forEach { reading ->
-                val slot = elapsedSecond % 60
-                val kept = nextHistory[reading.key].orEmpty()
-                    .filter { elapsedSecond - it.second in 0..59 }
-                    .filterNot { it.second % 60 == slot }
-                    .toMutableList()
-                kept.add(PinHistoryPoint(elapsedSecond, reading.value))
-                nextHistory[reading.key] = kept.sortedBy { it.second }
-            }
-
             state.copy(
                 pinCapabilities = nextCapabilities ?: state.pinCapabilities,
                 sensorConfigs = sortedConfigs,
-                sensorHistory = nextHistory.filterKeys { key ->
-                    key in configuredKeys || key in pushedReadings.keys
-                },
                 pinBusy = false,
                 controlError = null
             )
@@ -615,7 +630,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun acceptExternalSensorPayload(values: Map<String, Int>) {
         val now = System.currentTimeMillis()
-        val elapsedSecond = ((now - pinHistoryStartedAt) / 1000L).toInt()
         values.toSortedMap().forEach { (rawKey, rawValue) ->
             val key = "push_${rawKey.trim()}"
             val safeValue = rawValue.coerceIn(0, FSR_ANALOG_MAX_VALUE)
@@ -632,18 +646,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 updatedAtMillis = now,
                 source = "推送"
             )
-
-            _uiState.update { state ->
-                val nextHistory = state.sensorHistory.toMutableMap()
-                val slot = elapsedSecond % 60
-                val kept = nextHistory[key].orEmpty()
-                    .filter { elapsedSecond - it.second in 0..59 }
-                    .filterNot { it.second % 60 == slot }
-                    .toMutableList()
-                kept.add(PinHistoryPoint(elapsedSecond, safeValue))
-                nextHistory[key] = kept.sortedBy { it.second }
-                state.copy(sensorHistory = nextHistory)
-            }
         }
         publishSensorReadings()
     }

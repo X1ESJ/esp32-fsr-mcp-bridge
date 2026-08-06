@@ -2,7 +2,7 @@
 
 Licensed under BSD 2-Clause License.
 
-当前版本：`V2.5.0`
+当前版本：`V2.6.0`
 
 本项目通过 WiFi 接收 ESP32-S3 支持 ADC 的 GPIO 端口数据，在 Android App 私有数据区持续保存 FSR402 压力传感器记录，并通过手机本地 MCP 服务让第三方 AI 聊天应用读取实时值、短期历史、触摸事件和会话摘要。
 
@@ -831,7 +831,7 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware\Esp32_wifi_connect
 
 ## 13. 更新日志 Changelog
 
-### V2.5.0
+### V2.6.0
 
 - 主界面、设置页和配网页补上弹性按压反馈，主要按钮和可点卡片的交互手感更统一。
 - 传感器值、变化量和统计数字改为逐位滚动的锁拨盘动画，只滚动发生变化的数字位。

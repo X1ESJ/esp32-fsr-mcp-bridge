@@ -84,6 +84,16 @@ private fun MainRoute(viewModel: MainViewModel) {
         }
     }
 
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            viewModel.exportFsrDatabaseToUri(uri)
+        } else {
+            viewModel.markExportCancelled()
+        }
+    }
+
     LaunchedEffect(Unit) {
         val shouldRequestPermissions = requestedPermissions.any { permission ->
             ContextCompat.checkSelfPermission(context, permission) != PackageManager.PERMISSION_GRANTED
@@ -122,7 +132,10 @@ private fun MainRoute(viewModel: MainViewModel) {
         onUpdateSampleInterval = viewModel::updateSampleIntervalMs,
         onUpdateTriggerThreshold = viewModel::updateTriggerThreshold,
         onUpdateSupabaseSettings = viewModel::updateSupabaseSettings,
-        onExportDatabase = viewModel::exportFsrDatabase,
+        onExportDatabase = {
+            exportLauncher.launch(viewModel.buildSuggestedExportFileName())
+        },
+        onClearDatabase = viewModel::clearDatabase,
         onSaveFsrSensor = viewModel::saveFsrSensor,
         onDeleteSensor = viewModel::deleteSensor,
         onRetryMdns = viewModel::retryMdns,

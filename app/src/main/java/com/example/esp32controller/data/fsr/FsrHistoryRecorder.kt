@@ -65,6 +65,14 @@ class FsrHistoryRecorder(
         minuteAccumulator?.let { database.upsertMinuteRollup(it.toRollup(gson, settings.sampleIntervalMs)) }
     }
 
+    @Synchronized
+    fun resetRuntime() {
+        sensorStates.clear()
+        recentShortEvents.clear()
+        activeSession = null
+        minuteAccumulator = null
+    }
+
     private fun updateSession(
         activeReadings: List<FsrSensorReading>,
         now: Long

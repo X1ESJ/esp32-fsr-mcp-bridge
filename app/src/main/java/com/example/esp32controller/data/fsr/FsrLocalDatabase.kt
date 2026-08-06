@@ -5,6 +5,7 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.net.Uri
 import android.os.Environment
 import com.example.esp32controller.model.FsrDatabaseStats
 import com.example.esp32controller.model.FsrLocalEvent
@@ -17,15 +18,29 @@ import com.google.gson.Gson
 import com.google.gson.JsonParser
 import com.google.gson.reflect.TypeToken
 import java.io.File
+import java.io.Writer
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 
 private const val DATABASE_NAME = "fsr_local_history.db"
 private const val DATABASE_VERSION = 1
+private const val LEGACY_ARCHIVE_ROOT_DIR = "data"
+private const val ACTIVE_ARCHIVE_FILE = "active_archive.txt"
+private const val SAMPLES_ARCHIVE_FILE = "samples.ndjson"
+private const val EVENTS_ARCHIVE_FILE = "events.ndjson"
+private const val SESSIONS_ARCHIVE_FILE = "sessions.ndjson"
+private const val MINUTES_ARCHIVE_FILE = "minute_rollups.ndjson"
 
 class FsrLocalDatabase private constructor(
     context: Context,
     private val gson: Gson = Gson()
 ) : SQLiteOpenHelper(context.applicationContext, DATABASE_NAME, null, DATABASE_VERSION) {
+    private val appContext = context.applicationContext
+    private val archiveRootDir = resolveArchiveRootDir(appContext)
+    private val legacyArchiveRootDir = File(appContext.filesDir, LEGACY_ARCHIVE_ROOT_DIR)
+    @Volatile private var activeArchiveDir: File = ensureActiveArchiveDir()
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -134,11 +149,21 @@ class FsrLocalDatabase private constructor(
                 put("values_json", gson.toJson(values))
             }
         )
+        appendArchiveLine(
+            SAMPLES_ARCHIVE_FILE,
+            mapOf(
+                "t" to t,
+                "deviceMac" to device?.macAddress,
+                "deviceName" to device?.name,
+                "deviceIp" to device?.ipAddress,
+                "values" to values
+            )
+        )
     }
 
     @Synchronized
     fun insertEvent(event: FsrLocalEvent): Long {
-        return writableDatabase.insert(
+        val rowId = writableDatabase.insert(
             "fsr_events",
             null,
             ContentValues().apply {
@@ -152,6 +177,21 @@ class FsrLocalDatabase private constructor(
                 put("summary", event.summary)
             }
         )
+        appendArchiveLine(
+            EVENTS_ARCHIVE_FILE,
+            mapOf(
+                "id" to rowId,
+                "sessionId" to event.sessionId,
+                "startMs" to event.startMs,
+                "endMs" to event.endMs,
+                "type" to event.type,
+                "sensors" to event.sensors,
+                "peakValue" to event.peakValue,
+                "avgValue" to event.avgValue,
+                "summary" to event.summary
+            )
+        )
+        return rowId
     }
 
     @Synchronized
@@ -167,7 +207,7 @@ class FsrLocalDatabase private constructor(
                 put("avg_pressure", summary.avgPressure)
                 put("max_pressure", summary.maxPressure)
                 put("hug_count", summary.hugCount)
-                put("poke_count", summary.pinchCount)
+                put("poke_count", summary.pokeCount)
                 put("pinch_count", summary.pinchCount)
                 put("stroke_count", summary.strokeCount)
                 put("press_count", summary.pressCount)
@@ -176,6 +216,24 @@ class FsrLocalDatabase private constructor(
                 put("uploaded", 0)
             },
             SQLiteDatabase.CONFLICT_REPLACE
+        )
+        appendArchiveLine(
+            SESSIONS_ARCHIVE_FILE,
+            mapOf(
+                "id" to summary.id,
+                "startMs" to summary.startMs,
+                "endMs" to summary.endMs,
+                "durationMs" to summary.durationMs,
+                "avgPressure" to summary.avgPressure,
+                "maxPressure" to summary.maxPressure,
+                "hugCount" to summary.hugCount,
+                "pokeCount" to summary.pokeCount,
+                "pinchCount" to summary.pinchCount,
+                "strokeCount" to summary.strokeCount,
+                "pressCount" to summary.pressCount,
+                "summary" to summary.summary,
+                "updatedAtMs" to summary.updatedAtMs
+            )
         )
     }
 
@@ -197,6 +255,19 @@ class FsrLocalDatabase private constructor(
             },
             SQLiteDatabase.CONFLICT_REPLACE
         )
+        appendArchiveLine(
+            MINUTES_ARCHIVE_FILE,
+            mapOf(
+                "id" to rollup.remoteId,
+                "sessionId" to rollup.sessionId,
+                "minuteStartMs" to rollup.minuteStartMs,
+                "deviceMac" to rollup.deviceMac,
+                "deviceName" to rollup.deviceName,
+                "samples" to rollup.samples,
+                "values" to parseJson(rollup.valuesJson),
+                "summary" to rollup.summary
+            )
+        )
     }
 
     @Synchronized
@@ -217,7 +288,8 @@ class FsrLocalDatabase private constructor(
             sessionRows = sessionRows,
             minuteRows = minuteRows,
             pendingUploads = pendingUploads,
-            lastSampleAtMs = lastSampleAtMs
+            lastSampleAtMs = lastSampleAtMs,
+            activeArchiveDir = activeArchiveDir.absolutePath
         )
     }
 
@@ -382,86 +454,195 @@ class FsrLocalDatabase private constructor(
         )
         dir.mkdirs()
         val file = File(dir, "fsr-export-${System.currentTimeMillis()}.json")
-        file.bufferedWriter(Charsets.UTF_8).use { writer ->
-            writer.write("{")
-            writer.write("\"exportId\":")
-            writer.write(gson.toJson(UUID.randomUUID().toString()))
-            writer.write(",\"exportedAtMs\":${System.currentTimeMillis()}")
-            writer.write(",\"samples\":")
-            writeRows(writer, "fsr_samples", "t ASC") { cursor ->
-                mapOf(
-                    "t" to cursor.getLong("t"),
-                    "deviceMac" to cursor.getStringOrNull("device_mac"),
-                    "deviceName" to cursor.getStringOrNull("device_name"),
-                    "deviceIp" to cursor.getStringOrNull("device_ip"),
-                    "values" to parseJson(cursor.getString("values_json"))
-                )
-            }
-            writer.write(",\"minuteRollups\":")
-            writeRows(writer, "fsr_minute_rollups", "minute_start_ms ASC") { cursor ->
-                mapOf(
-                    "id" to cursor.getString("remote_id"),
-                    "sessionId" to cursor.getString("session_id"),
-                    "minuteStartMs" to cursor.getLong("minute_start_ms"),
-                    "deviceMac" to cursor.getStringOrNull("device_mac"),
-                    "deviceName" to cursor.getStringOrNull("device_name"),
-                    "samples" to cursor.getInt("samples"),
-                    "values" to parseJson(cursor.getString("values_json")),
-                    "summary" to cursor.getString("summary")
-                )
-            }
-            writer.write(",\"events\":")
-            writeRows(writer, "fsr_events", "start_ms ASC") { cursor ->
-                mapOf(
-                    "id" to cursor.getLong("id"),
-                    "sessionId" to cursor.getString("session_id"),
-                    "startMs" to cursor.getLong("start_ms"),
-                    "endMs" to cursor.getLong("end_ms"),
-                    "type" to cursor.getString("type"),
-                    "sensors" to parseStringList(cursor.getString("sensors_json")),
-                    "peakValue" to cursor.getInt("peak_value"),
-                    "avgValue" to cursor.getInt("avg_value"),
-                    "summary" to cursor.getString("summary")
-                )
-            }
-            writer.write(",\"sessions\":")
-            writeRows(writer, "fsr_sessions", "start_ms ASC") { cursor ->
-                mapOf(
-                    "id" to cursor.getString("id"),
-                    "startMs" to cursor.getLong("start_ms"),
-                    "endMs" to cursor.getLong("end_ms"),
-                    "durationMs" to cursor.getLong("duration_ms"),
-                    "avgPressure" to cursor.getFloat("avg_pressure"),
-                    "maxPressure" to cursor.getInt("max_pressure"),
-                    "hugCount" to cursor.getInt("hug_count"),
-                    "pokeCount" to cursor.getInt("poke_count"),
-                    "pinchCount" to cursor.getInt("pinch_count"),
-                    "strokeCount" to cursor.getInt("stroke_count"),
-                    "pressCount" to cursor.getInt("press_count"),
-                    "summary" to cursor.getString("summary")
-                )
-            }
-            writer.write("}")
-        }
+        file.bufferedWriter(Charsets.UTF_8).use(::writePrettyExportJson)
         return file
     }
 
+    @Synchronized
+    fun exportToUri(context: Context, uri: Uri) {
+        context.contentResolver.openOutputStream(uri, "wt")?.bufferedWriter(Charsets.UTF_8)?.use(::writePrettyExportJson)
+            ?: error("无法写入所选文件")
+    }
+
+    @Synchronized
+    fun clearAllAndRotateArchive(): File {
+        writableDatabase.beginTransaction()
+        try {
+            writableDatabase.delete("fsr_samples", null, null)
+            writableDatabase.delete("fsr_events", null, null)
+            writableDatabase.delete("fsr_sessions", null, null)
+            writableDatabase.delete("fsr_minute_rollups", null, null)
+            writableDatabase.execSQL("DELETE FROM sqlite_sequence")
+            writableDatabase.setTransactionSuccessful()
+        } finally {
+            writableDatabase.endTransaction()
+        }
+        activeArchiveDir = rotateArchiveDir()
+        return activeArchiveDir
+    }
+
+    @Synchronized
+    fun buildSuggestedExportFileName(): String {
+        val stamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())
+        return "fsr-export-$stamp.json"
+    }
+
     private fun writeRows(
-        writer: java.io.Writer,
+        writer: Writer,
         table: String,
         orderBy: String,
+        indent: String = "    ",
         mapper: (Cursor) -> Map<String, Any?>
     ) {
-        writer.write("[")
+        var wroteAny = false
+        writer.write("[\n")
         readableDatabase.query(table, null, null, null, null, null, orderBy).use { cursor ->
             var first = true
             while (cursor.moveToNext()) {
-                if (!first) writer.write(",")
+                if (!first) writer.write(",\n")
                 first = false
+                wroteAny = true
+                writer.write(indent)
                 writer.write(gson.toJson(mapper(cursor)))
             }
         }
-        writer.write("]")
+        if (wroteAny) {
+            writer.write("\n")
+        }
+        writer.write("  ]")
+    }
+
+    private fun writePrettyExportJson(writer: Writer) {
+        val exportId = UUID.randomUUID().toString()
+        val exportedAtMs = System.currentTimeMillis()
+        writer.write("{\n")
+        writer.write("  \"exportId\": ${gson.toJson(exportId)},\n")
+        writer.write("  \"exportedAtMs\": $exportedAtMs,\n")
+        writer.write("  \"activeArchiveDir\": ${gson.toJson(activeArchiveDir.absolutePath)},\n")
+        writer.write("  \"samples\": ")
+        writeRows(writer, "fsr_samples", "t ASC") { cursor ->
+            mapOf(
+                "t" to cursor.getLong("t"),
+                "deviceMac" to cursor.getStringOrNull("device_mac"),
+                "deviceName" to cursor.getStringOrNull("device_name"),
+                "deviceIp" to cursor.getStringOrNull("device_ip"),
+                "values" to parseJson(cursor.getString("values_json"))
+            )
+        }
+        writer.write(",\n  \"minuteRollups\": ")
+        writeRows(writer, "fsr_minute_rollups", "minute_start_ms ASC") { cursor ->
+            mapOf(
+                "id" to cursor.getString("remote_id"),
+                "sessionId" to cursor.getString("session_id"),
+                "minuteStartMs" to cursor.getLong("minute_start_ms"),
+                "deviceMac" to cursor.getStringOrNull("device_mac"),
+                "deviceName" to cursor.getStringOrNull("device_name"),
+                "samples" to cursor.getInt("samples"),
+                "values" to parseJson(cursor.getString("values_json")),
+                "summary" to cursor.getString("summary")
+            )
+        }
+        writer.write(",\n  \"events\": ")
+        writeRows(writer, "fsr_events", "start_ms ASC") { cursor ->
+            mapOf(
+                "id" to cursor.getLong("id"),
+                "sessionId" to cursor.getString("session_id"),
+                "startMs" to cursor.getLong("start_ms"),
+                "endMs" to cursor.getLong("end_ms"),
+                "type" to cursor.getString("type"),
+                "sensors" to parseStringList(cursor.getString("sensors_json")),
+                "peakValue" to cursor.getInt("peak_value"),
+                "avgValue" to cursor.getInt("avg_value"),
+                "summary" to cursor.getString("summary")
+            )
+        }
+        writer.write(",\n  \"sessions\": ")
+        writeRows(writer, "fsr_sessions", "start_ms ASC") { cursor ->
+            mapOf(
+                "id" to cursor.getString("id"),
+                "startMs" to cursor.getLong("start_ms"),
+                "endMs" to cursor.getLong("end_ms"),
+                "durationMs" to cursor.getLong("duration_ms"),
+                "avgPressure" to cursor.getFloat("avg_pressure"),
+                "maxPressure" to cursor.getInt("max_pressure"),
+                "hugCount" to cursor.getInt("hug_count"),
+                "pokeCount" to cursor.getInt("poke_count"),
+                "pinchCount" to cursor.getInt("pinch_count"),
+                "strokeCount" to cursor.getInt("stroke_count"),
+                "pressCount" to cursor.getInt("press_count"),
+                "summary" to cursor.getString("summary")
+            )
+        }
+        writer.write("\n}\n")
+    }
+
+    private fun appendArchiveLine(fileName: String, payload: Any) {
+        runCatching {
+            val directory = activeArchiveDir
+            ensureArchiveFiles(directory)
+            File(directory, fileName).appendText(gson.toJson(payload) + "\n", Charsets.UTF_8)
+        }
+    }
+
+    private fun ensureActiveArchiveDir(): File {
+        migrateLegacyArchiveIfNeeded()
+        archiveRootDir.mkdirs()
+        val markerFile = File(archiveRootDir, ACTIVE_ARCHIVE_FILE)
+        val existingName = markerFile.takeIf { it.exists() }?.readText(Charsets.UTF_8)?.trim().orEmpty()
+        if (existingName.isNotBlank()) {
+            val existingDir = File(archiveRootDir, existingName)
+            existingDir.mkdirs()
+            ensureArchiveFiles(existingDir)
+            return existingDir
+        }
+        return rotateArchiveDir()
+    }
+
+    private fun rotateArchiveDir(): File {
+        archiveRootDir.mkdirs()
+        val folderName = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())
+        val directory = File(archiveRootDir, folderName).apply { mkdirs() }
+        ensureArchiveFiles(directory)
+        File(archiveRootDir, ACTIVE_ARCHIVE_FILE).writeText(folderName, Charsets.UTF_8)
+        return directory
+    }
+
+    private fun migrateLegacyArchiveIfNeeded() {
+        if (!legacyArchiveRootDir.exists() || legacyArchiveRootDir.absolutePath == archiveRootDir.absolutePath) {
+            return
+        }
+        if (archiveRootDir.exists() && archiveRootDir.listFiles()?.isNotEmpty() == true) {
+            return
+        }
+        runCatching {
+            archiveRootDir.mkdirs()
+            legacyArchiveRootDir.listFiles().orEmpty().forEach { source ->
+                val target = File(archiveRootDir, source.name)
+                copyRecursively(source, target)
+            }
+        }
+    }
+
+    private fun copyRecursively(source: File, target: File) {
+        if (source.isDirectory) {
+            target.mkdirs()
+            source.listFiles().orEmpty().forEach { child ->
+                copyRecursively(child, File(target, child.name))
+            }
+            return
+        }
+        target.parentFile?.mkdirs()
+        source.copyTo(target, overwrite = true)
+    }
+
+    private fun ensureArchiveFiles(directory: File) {
+        directory.mkdirs()
+        listOf(SAMPLES_ARCHIVE_FILE, EVENTS_ARCHIVE_FILE, SESSIONS_ARCHIVE_FILE, MINUTES_ARCHIVE_FILE).forEach { name ->
+            val file = File(directory, name)
+            if (!file.exists()) {
+                file.createNewFile()
+            }
+        }
     }
 
     private fun parseJson(raw: String): Any {
@@ -550,6 +731,14 @@ class FsrLocalDatabase private constructor(
 
     companion object {
         @Volatile private var instance: FsrLocalDatabase? = null
+
+        private fun resolveArchiveRootDir(context: Context): File {
+            val externalFilesDir = context.getExternalFilesDir(null)
+            val appExternalRoot = externalFilesDir
+                ?.takeIf { it.name.equals("files", ignoreCase = true) }
+                ?.parentFile
+            return appExternalRoot ?: externalFilesDir ?: context.filesDir
+        }
 
         fun get(context: Context, gson: Gson = Gson()): FsrLocalDatabase {
             return instance ?: synchronized(this) {
